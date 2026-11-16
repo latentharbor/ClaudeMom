@@ -1,5 +1,7 @@
 // Public site classification used by the official Desktop's anonymous/3p
 // path. This is not an inference gateway or an organization-policy service.
+import { isIP } from "node:net";
+
 export const SITE_POLICY_ENDPOINT = "https://releases.claude.com/api/web/url_hash_check/browser_extension?anonymous=1";
 const DOMAIN_PATH = "/api/web/domain_info/browser_extension";
 const URL_PATH = "/api/web/url_hash_check/browser_extension";
@@ -30,7 +32,9 @@ export function canonicalPolicyUrl(value) {
 
 function domainPolicyUrl(url) {
   const domains = url.searchParams.getAll("domain");
-  if (domains.length !== 1 || !domains[0] || domains[0].length > 253 || /[\s\u0000-\u001f\u007f/@?#\\:%]/.test(domains[0])) {
+  const domain = domains[0] || "";
+  const ipv6 = domain.startsWith("[") && domain.endsWith("]") && isIP(domain.slice(1, -1)) === 6;
+  if (domains.length !== 1 || !domain || domain.length > 253 || /[\s\u0000-\u001f\u007f/@?#\\%]/.test(domain) || domain.includes(":") && !ipv6) {
     throw new PolicyError(400, "invalid_domain");
   }
   return canonicalPolicyUrl(`https://${domains[0]}/`);
@@ -44,7 +48,12 @@ function readRequest(req, deadline) {
       clearTimeout(timer);
       req.off("data", data); req.off("end", end); req.off("aborted", aborted); req.off("error", error);
     };
-    const fail = reason => { cleanup(); req.resume(); reject(reason); };
+    const fail = reason => {
+      cleanup();
+      // An aborted IncomingMessage can emit ECONNRESET after 'aborted'.
+      // Retain an error sink while draining so closing a tab cannot crash us.
+      req.once("error", () => {}); req.resume(); reject(reason);
+    };
     const data = chunk => {
       length += chunk.length;
       if (length > MAX_REQUEST_BYTES) return fail(new PolicyError(413, "request_too_large"));
@@ -92,22 +101,22 @@ function consult(request, policyUrl, deadline, res) {
         headers: { "content-type": "application/json", accept: "application/json",
           "accept-encoding": "identity", "user-agent": "ClaudeMom site policy client",
           "content-length": body.length } }, response => {
+        response.once("error", () => fail(new PolicyError(503, "response_failed")));
+        response.once("aborted", () => fail(new PolicyError(503, "response_aborted")));
         if (finished) { response.destroy(); return; }
-        if (response.statusCode !== 200) { response.destroy(); return fail(new PolicyError(503, "upstream_status")); }
+        if (response.statusCode !== 200) { fail(new PolicyError(503, "upstream_status")); response.destroy(); return; }
         if (!/^application\/(?:[\w.-]+\+)?json(?:\s*;|$)/i.test(String(response.headers["content-type"] || "")) ||
             response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity" ||
             Number(response.headers["content-length"]) > MAX_RESPONSE_BYTES) {
-          response.destroy(); return fail(new PolicyError(503, "invalid_response"));
+          fail(new PolicyError(503, "invalid_response")); response.destroy(); return;
         }
         let length = 0;
         const chunks = [];
         response.on("data", chunk => {
           length += chunk.length;
-          if (length > MAX_RESPONSE_BYTES) { response.destroy(); fail(new PolicyError(503, "response_too_large")); }
+          if (length > MAX_RESPONSE_BYTES) { fail(new PolicyError(503, "response_too_large")); response.destroy(); }
           else chunks.push(chunk);
         });
-        response.once("aborted", () => fail(new PolicyError(503, "response_aborted")));
-        response.once("error", () => fail(new PolicyError(503, "response_failed")));
         response.once("end", () => {
           if (finished) return;
           try {
@@ -158,7 +167,7 @@ export function createSitePolicyHandler({ request, timeoutMs = 4000, onFailure =
       const reason = error instanceof PolicyError ? error.reason : "upstream_failed";
       // Only bounded reason codes; neither the visited URL nor upstream body
       // (which may be an HTML challenge) belongs in application logs.
-      if (status >= 500 && status !== 499) onFailure(reason);
+      if (status >= 500) { try { onFailure(reason); } catch {} }
       reply(res, status, { error: { type: status < 500 ? "invalid_site_policy_request" : "site_policy_unavailable",
         message: status < 500 ? "Invalid site policy request." : "Site policy check is temporarily unavailable.", reason } });
     }

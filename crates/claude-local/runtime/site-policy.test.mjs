@@ -99,6 +99,8 @@ test("legacy domain queries use the same real classification path", async () => 
   assert.equal(result.status, 200);
   assert.deepEqual(received.at(-1).input, { url: "https://example.com/" });
   assert.equal(result.json.domain, "example.com");
+  const ipv6 = await call("/api/web/domain_info/browser_extension?domain=%5B2606%3A4700%3A%3A1111%5D", { method: "GET", body: undefined });
+  assert.equal(ipv6.status, 200); assert.equal(ipv6.json.domain, "[2606:4700::1111]");
 });
 
 for (const category of ["category0", "category1", "category2", "category3"]) {
@@ -133,6 +135,17 @@ test("a disconnected browser cancels its outstanding classification request", as
     headers: { host: "claude.ai", "content-type": "application/json" } });
   req.on("error", () => {}); req.end(JSON.stringify({ url: "https://example.com/cancel" }));
   await arrived; req.destroy(); await closed;
+});
+
+test("aborting a partially uploaded request cannot crash the policy server", async () => {
+  const req = http.request({ hostname: "127.0.0.1", port: frontPort, path: endpoint, method: "POST",
+    headers: { host: "claude.ai", "content-type": "application/json", "content-length": 1000 } });
+  req.on("error", () => {});
+  req.write('{"url":');
+  await once(req, "socket");
+  req.destroy();
+  const result = await call(endpoint);
+  assert.equal(result.status, 200);
 });
 
 test("malformed and oversized requests never reach the classifier", async () => {
