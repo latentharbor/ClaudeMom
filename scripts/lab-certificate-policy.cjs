@@ -1,5 +1,6 @@
 "use strict";
 const { X509Certificate, timingSafeEqual } = require("node:crypto");
+const path = require("node:path");
 
 // An application-specific trust anchor for this isolated copy. The pin is
 // the same public CA/leaf pair used by its owned loopback proxy, not a rule
@@ -34,4 +35,13 @@ function certificateVerifyProc(matches) {
     callback(request.errorCode === -202 && matches(request.hostname, request.certificate.data) ? 0 : -3);
   };
 }
-module.exports = { createLabCertificatePolicy, certificateVerifyProc };
+function withLabChildCA(command, options, root, resourcesPath) {
+  // Desktop reconstructs the CLI environment from its system trust bundle,
+  // dropping the launcher's extra CA. Scope this addition to our own CLI
+  // launcher and private config; no production or unrelated child is changed.
+  if (path.basename(root) !== ".claude-mom-ui-lab" ||
+      command !== path.join(resourcesPath, "../Helpers/disclaimer") ||
+      options?.env?.CLAUDE_CONFIG_DIR !== path.join(root, "profile-home/.claude-desktop-local/claude-code")) return options;
+  return { ...options, env: { ...options.env, NODE_EXTRA_CA_CERTS: path.join(root, "claude-local/ca/ca.pem") } };
+}
+module.exports = { createLabCertificatePolicy, certificateVerifyProc, withLabChildCA };

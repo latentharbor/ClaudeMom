@@ -3,7 +3,7 @@ const fs = require("node:fs"), path = require("node:path"), os = require("node:o
 const { execFileSync } = require("node:child_process");
 const { before, after, test } = require("node:test");
 const { X509Certificate } = require("node:crypto");
-const { createLabCertificatePolicy, certificateVerifyProc } = require("./lab-certificate-policy.cjs");
+const { createLabCertificatePolicy, certificateVerifyProc, withLabChildCA } = require("./lab-certificate-policy.cjs");
 let dir, ca, leaf, second, otherCa, forged;
 function openssl(...args) { execFileSync("openssl", args, { cwd: dir, stdio: "ignore" }); }
 before(() => {
@@ -46,4 +46,20 @@ test("only the missing-authority error receives scoped application trust", () =>
   for (const error of [0, -200, -201, -206, -208]) assert.equal(call(error), -3);
   assert.equal(call(-202, "example.com"), -3);
   assert.equal(call(-202, "claude.ai", forged), -3);
+});
+test("only the owned Code launcher receives the lab CA", () => {
+  const root = "/home/test/.claude-mom-ui-lab", resources = root + "/Claude UI Lab.app/Contents/Resources";
+  const command = path.join(resources, "../Helpers/disclaimer");
+  const original = { cwd: root, env: { CLAUDE_CONFIG_DIR: root + "/profile-home/.claude-desktop-local/claude-code", PATH: "/usr/bin" } };
+  const result = withLabChildCA(command, original, root, resources);
+  assert.equal(result.env.NODE_EXTRA_CA_CERTS, root + "/claude-local/ca/ca.pem");
+  assert.equal(result.env.PATH, original.env.PATH);
+  assert.equal(result.env.NODE_TLS_REJECT_UNAUTHORIZED, undefined);
+  assert.equal(original.env.NODE_EXTRA_CA_CERTS, undefined);
+  for (const other of ["/usr/bin/git", "/Applications/Claude.app/Contents/Helpers/disclaimer"]) {
+    assert.equal(withLabChildCA(other, original, root, resources), original);
+  }
+  const production = { env: { CLAUDE_CONFIG_DIR: "/home/test/.claude" } };
+  assert.equal(withLabChildCA(command, production, root, resources), production);
+  assert.equal(withLabChildCA(command, original, "/home/test/.claude-mom", resources), original);
 });

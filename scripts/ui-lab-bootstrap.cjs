@@ -5,7 +5,11 @@ const electron = require("electron");
 const root = process.env.CLAUDE_MOM_LAB_ROOT;
 if (!root || path.basename(root) !== ".claude-mom-ui-lab") throw Error("Missing isolated UI lab root");
 const { app, globalShortcut, shell, autoUpdater } = electron;
-const { createLabCertificatePolicy, certificateVerifyProc } = require("./lab-certificate-policy.cjs");
+const { createLabCertificatePolicy, certificateVerifyProc, withLabChildCA } = require("./lab-certificate-policy.cjs");
+const childProcess = require("node:child_process"), spawn = childProcess.spawn;
+childProcess.spawn = function(command, args, options) {
+  return spawn.call(this, command, args, withLabChildCA(command, options, root, process.resourcesPath));
+};
 const matchesProxyCertificate = createLabCertificatePolicy(
   fs.readFileSync(path.join(root, "claude-local/ca/ca.pem")),
   fs.readFileSync(path.join(root, "claude-local/ca/server.crt")),
