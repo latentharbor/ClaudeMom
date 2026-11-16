@@ -5,6 +5,16 @@ const MAX_FEATURES = 2048;
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
+function evaluatedWebFeatures(web) {
+  if (!web || web.hashingAlgorithm !== "sha256" || !record(web.features)) return null;
+  const entries = Object.entries(web.features);
+  if (!entries.length || entries.length > 4096) return null;
+  if (entries.some(([key, feature]) => !/^[A-Za-z0-9+/]{43}=$/.test(key) || !record(feature) ||
+      !Object.hasOwn(feature, "value") || typeof feature.on !== "boolean" ||
+      typeof feature.off !== "boolean" || typeof feature.source !== "string")) return null;
+  return { features: web.features, hashing_algorithm: "sha256", user: {} };
+}
+
 // This is an optional evaluated response captured by the owner from the
 // official endpoint, never a list of features to force on. Keep it outside
 // application assets: an update must not replace the owner's reference.
@@ -31,6 +41,7 @@ export function loadDesktopUiProfile(file, desktopVersion, now = Date.now()) {
     return {
       features: profile.features,
       web,
+      webFeatures: evaluatedWebFeatures(web),
       source: "official-reference",
       warning: now - captured > WEEK
         ? "Desktop UI reference is older than seven days; refresh it to follow the official rollout."

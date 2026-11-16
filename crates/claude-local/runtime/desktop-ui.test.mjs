@@ -83,3 +83,15 @@ test("native Code model choices resolve to their configured gateway routes", () 
   assert.equal(gatewayModel(config, "team-b/claude-sonnet-5-5"), "team-b/claude-sonnet-5-5");
   assert.throws(() => gatewayModel({ ...config, model: "group/default" }, "claude-sonnet-5-5"), /multiple configured routes/);
 });
+
+test("current web flags keep evaluated SHA-256 values without account attributes", () => {
+  const key = "a".repeat(43) + "=";
+  const web = { buildId: "web", gatedImports: {}, hashingAlgorithm: "sha256",
+    features: { [key]: { value: false, on: false, off: true, source: "defaultValue" } } };
+  const result = loadDesktopUiProfile(fixture({ web }), "5.11492.5", now);
+  assert.equal(result.webFeatures.hashing_algorithm, "sha256");
+  assert.equal(result.webFeatures.features[key].value, false);
+  assert.deepEqual(result.webFeatures.user, {});
+  const legacy = loadDesktopUiProfile(fixture({ web: { ...web, features: { [key]: { defaultValue: true } } } }), "5.11492.5", now);
+  assert.equal(legacy.webFeatures, null);
+});

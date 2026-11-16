@@ -30,11 +30,14 @@ No session cookie, account entitlement, inference model or thinking payload is
 changed by this feature response. A feature entry does not implement its cloud
 backend or establish that a cloud feature works.
 
-The profile may also hold `web: {buildId, gatedImports}` from the owner's
+The profile may also hold `web: {buildId, gatedImports, features, hashingAlgorithm}` from the owner's
 current official bootstrap response. This contains resource metadata, not
 the account object or its cookies. A web cache is used only when its own build
 ID matches that metadata and its embedded build time is at least as recent
-as the installed document. Unknown or broken caches fall back to the package.
+as the installed document. Current evaluated SHA-256 feature results replace
+the old recorded rule definitions only for that matched web document; account
+attributes are not imported. Disabled results remain disabled, and the local
+Cowork choice still takes precedence. Unknown or broken caches fall back to the package.
 
 The lab build has a different application identifier, port and state directory
 (`~/.claude-mom-ui-lab`). It cannot launch the production Desktop, import live

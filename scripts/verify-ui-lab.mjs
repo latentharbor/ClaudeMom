@@ -101,6 +101,8 @@ try {
   result.resourceSource = health.uiResources;
   result.resourceBuildId = health.uiBuildId;
   assert.equal(health.desktopFeaturesSource, "official-reference");
+  assert.equal(health.webFeaturesSource, "official-reference");
+  result.checks.currentEvaluatedWebFeatures = true;
   result.checks.installedResourceProvenance = true;
   result.checks.sameVersionOfficialFeatures = true;
   const status = await rpc("/status");

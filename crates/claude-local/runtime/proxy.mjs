@@ -362,7 +362,8 @@ function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
     lastClientAt, ...(persistenceWarning || desktopUi.warning ? { warning: persistenceWarning || desktopUi.warning } : {}),
-    ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source } : {}),
+    ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source,
+      webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template" } : {}),
   };
 }
 
@@ -712,6 +713,14 @@ function mockEdgeApi(req, res, url) {
 // 合成兜底（localBootstrap 的空表）的 hashing_algorithm 不同，不往里塞。
 const COWORK_FEATURE_ID = "574905726";
 function forceCowork(result, template) {
+  if (result.org_growthbook?.hashing_algorithm === "sha256") {
+    const key = crypto.createHash("sha256").update("yukon_silver").digest("base64");
+    if (!result.org_growthbook.features?.[key]) return;
+    result.org_growthbook.features[key] = { value: runtime.cowork, on: runtime.cowork, off: !runtime.cowork,
+      source: "force", experiment: null, experimentResult: null };
+    return;
+  }
+  if (!runtime.cowork) return;
   if (!template?.org_growthbook?.features || !result.org_growthbook?.features) return;
   result.org_growthbook = {
     ...result.org_growthbook,
@@ -734,7 +743,10 @@ function resolvedBootstrap() {
     ...result.served_copy,
     "web.plan_name.max_20x": runtime.localization ? "Codex++ 本地网关" : "Codex++ local gateway",
   };
-  if (runtime.cowork) forceCowork(result, template);
+  if (uiResources?.kind === "web-cache" && desktopUi.webFeatures) {
+    result.org_growthbook = structuredClone(desktopUi.webFeatures);
+  }
+  forceCowork(result, template);
   mergePoolModels(result);
   if (managedResources) {
     result.gated_imports_build_id = uiResources.buildId;
