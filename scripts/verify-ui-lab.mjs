@@ -159,8 +159,10 @@ try {
     for (const frame of await frames()) {
       try {
         const trusted = await evaluate(frame, `(() => {
-          const dialog=[...document.querySelectorAll('[role="dialog"],dialog')].find(e => e.innerText.includes(${JSON.stringify(path.join(root, "scratch"))}));
-          if(!dialog)return false;
+          const expected=${JSON.stringify(path.join(root, "scratch"))};
+          const body=document.body.innerText;
+          if(!body.includes(expected) || !/(Trust this workspace|信任此工作区)/i.test(body))return false;
+          const dialog=[...document.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog')].find(e => e.innerText.includes(expected)) || document;
           const button=[...dialog.querySelectorAll('button')].find(e => /^(Trust workspace|信任工作区)$/i.test(e.textContent.trim()));
           if(!button)return false;button.click();return true;
         })()`);
