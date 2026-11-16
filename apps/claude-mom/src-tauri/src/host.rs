@@ -88,6 +88,10 @@ impl Host for ClaudeMomHost {
         is_lab_build().then(|| state_dir().join("profile-home"))
     }
 
+    fn can_manage_system_trust(&self) -> bool {
+        !is_lab_build()
+    }
+
     fn ca_name(&self) -> &str {
         "ClaudeMom Local CA"
     }
@@ -115,6 +119,7 @@ impl Host for ClaudeMomHost {
             config.code_share_home = Some(false);
             config.import_cli_sessions = false;
             config.session_sync = false;
+            config.voice_input = false;
         }
         Ok(config)
     }
@@ -160,5 +165,21 @@ impl Host for ClaudeMomHost {
 
     fn diagnostic(&self, event: &str, detail: Value) {
         crate::log::append(event, detail);
+    }
+}
+
+#[cfg(test)]
+mod lab_tests {
+    use super::*;
+
+    #[test]
+    fn lab_paths_never_resolve_to_the_installed_desktop() {
+        if !is_lab_build() { return; }
+        let host = ClaudeMomHost;
+        let root = state_dir();
+        assert!(root.ends_with(".claude-mom-ui-lab"));
+        assert_eq!(host.isolated_desktop_app(), Some(root.join("Claude UI Lab.app")));
+        assert_eq!(host.isolated_desktop_home(), Some(root.join("profile-home")));
+        assert!(!host.can_manage_system_trust());
     }
 }

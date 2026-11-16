@@ -2001,6 +2001,8 @@ fn launch_original(
         sandbox.arg(executable(source));
         command = sandbox;
         command.env("CLAUDE_MOM_LAB_ROOT", host().state_dir());
+        command.env("TMPDIR", host().state_dir().join("tmp"));
+        command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
     }
     for name in [
         "ELECTRON_RUN_AS_NODE",
@@ -2245,12 +2247,14 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
             }
         }
         "trust" => {
+            ensure!(host().can_manage_system_trust(), "The isolated UI lab cannot change system certificate trust");
             install_assets(&root)?;
             prepare_ca(&root)?;
             trust_ca(&root)?;
             "本地证书已信任。".to_string()
         }
         "untrust" => {
+            ensure!(host().can_manage_system_trust(), "The isolated UI lab cannot change system certificate trust");
             untrust_ca(&root)?;
             "本地证书已取消信任。".to_string()
         }

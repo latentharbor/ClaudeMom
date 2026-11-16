@@ -56,6 +56,10 @@ pub trait Host: Send + Sync {
         None
     }
 
+    fn can_manage_system_trust(&self) -> bool {
+        true
+    }
+
     /// 证书在系统钥匙串 / 证书库里的名字，两个宿主各用各的，互不覆盖。
     fn ca_name(&self) -> &str;
 
