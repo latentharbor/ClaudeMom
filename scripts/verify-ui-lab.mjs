@@ -154,7 +154,21 @@ try {
     if(button) { button.click();return 'button'; }
     e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return 'enter';
   })()`);
-  await until(() => requests.length > 0, 90000);
+  await until(async () => {
+    if (requests.length) return true;
+    for (const frame of await frames()) {
+      try {
+        const trusted = await evaluate(frame, `(() => {
+          const dialog=[...document.querySelectorAll('[role="dialog"],dialog')].find(e => e.innerText.includes(${JSON.stringify(path.join(root, "scratch"))}));
+          if(!dialog)return false;
+          const button=[...dialog.querySelectorAll('button')].find(e => /^(Trust workspace|信任工作区)$/i.test(e.textContent.trim()));
+          if(!button)return false;button.click();return true;
+        })()`);
+        if(trusted) result.checks.isolatedScratchExplicitlyTrusted = true;
+      } catch {}
+    }
+    return false;
+  }, 90000);
   assert.ok(requests.every((request) => profiles.profiles[0].models.includes(request.model)));
   result.checks.nativeCodeUsesConfiguredGateway = true;
   await until(async () => {
