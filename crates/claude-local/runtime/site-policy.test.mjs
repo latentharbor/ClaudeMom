@@ -46,6 +46,10 @@ before(async () => {
   front = http.createServer((req, res) => {
     const url = new URL(req.url, "https://" + req.headers.host);
     if (!isSitePolicyUrl(url)) { res.writeHead(404); return res.end(); }
+    if (req.headers["x-fixture-abort-probe"] === "1") {
+      req.once("data", () => events.emit("partial-body"));
+      req.once("aborted", () => events.emit("partial-aborted"));
+    }
     void handler(req, res, url);
   });
   front.listen(0, "127.0.0.1"); await once(front, "listening"); frontPort = front.address().port;
@@ -138,12 +142,13 @@ test("a disconnected browser cancels its outstanding classification request", as
 });
 
 test("aborting a partially uploaded request cannot crash the policy server", async () => {
+  const partial = once(events, "partial-body"), aborted = once(events, "partial-aborted");
   const req = http.request({ hostname: "127.0.0.1", port: frontPort, path: endpoint, method: "POST",
-    headers: { host: "claude.ai", "content-type": "application/json", "content-length": 1000 } });
+    headers: { host: "claude.ai", "content-type": "application/json", "content-length": 1000, "x-fixture-abort-probe": "1" } });
   req.on("error", () => {});
   req.write('{"url":');
-  await once(req, "socket");
-  req.destroy();
+  await partial;
+  req.destroy(); await aborted;
   const result = await call(endpoint);
   assert.equal(result.status, 200);
 });
