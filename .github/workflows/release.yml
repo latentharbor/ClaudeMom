@@ -48,6 +48,7 @@ concurrency:
 jobs:
   prepare:
     name: Prepare draft Release
+    if: github.repository == 'BigPizzaV3/ClaudeMom'
     runs-on: ubuntu-latest
     outputs:
       is_draft: ${{ steps.release.outputs.is_draft }}

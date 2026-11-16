@@ -1,0 +1,83 @@
+name: Distribution release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to package"
+        required: true
+        default: v0.1.4
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: distribution-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/claude-mom/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate release inputs
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          node scripts/release-meta.mjs check "$RELEASE_TAG"
+      - name: Install build dependencies
+        working-directory: apps/claude-mom
+        run: npm ci
+      - name: Build production application
+        working-directory: apps/claude-mom
+        run: npm run tauri -- build --ci --bundles app,dmg
+      - name: Package signed update and installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=target/release/bundle/macos/ClaudeMom.app
+          codesign --verify --deep --strict "$app"
+          mkdir -p dist
+          version="${RELEASE_TAG#v}"
+          cp "target/release/bundle/dmg/ClaudeMom_${version}_aarch64.dmg" dist/
+          cp target/release/bundle/macos/ClaudeMom.app.tar.gz dist/ClaudeMom_aarch64.app.tar.gz
+          cp target/release/bundle/macos/ClaudeMom.app.tar.gz.sig dist/ClaudeMom_aarch64.app.tar.gz.sig
+          git rev-parse HEAD > dist/source-commit.txt
+          node scripts/release-meta.mjs notes "$RELEASE_TAG" > dist/RELEASE-NOTES.md
+          node <<'NODE'
+          const fs=require('fs');
+          const version=process.env.RELEASE_TAG.replace(/^v/,'');
+          const item={url:`https://github.com/latentharbor/ClaudeMom/releases/download/v${version}/ClaudeMom_aarch64.app.tar.gz`,signature:fs.readFileSync('dist/ClaudeMom_aarch64.app.tar.gz.sig','utf8').trim()};
+          fs.writeFileSync('dist/latest.json',JSON.stringify({version,notes:fs.readFileSync('dist/RELEASE-NOTES.md','utf8'),pub_date:new Date().toISOString(),platforms:{'darwin-aarch64':item,'darwin-aarch64-app':item}},null,2)+'\n');
+          NODE
+          (cd dist && shasum -a 256 ClaudeMom* latest.json source-commit.txt > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeMom-production-${{ inputs.tag || github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish complete distribution
+        if: github.repository == 'latentharbor/ClaudeMom'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --draft --verify-tag --title "ClaudeMom $RELEASE_TAG" --notes-file dist/RELEASE-NOTES.md
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest --verify-tag
