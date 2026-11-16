@@ -146,6 +146,24 @@ export function gatewayTarget(config, requestPath) {
 
 export function gatewayModel(config, requested) {
   if (config.models.includes(requested)) return requested;
+  // Desktop's embedded CLI can return the native name after resuming a
+  // session, while a gateway advertises provider/native-name. Preserve that
+  // choice instead of silently substituting the globally selected model.
+  const native = (id) => String(id || "").split("/").at(-1)
+    .replace(/^magpie-\d+\.anthropic\./, "").replace(/\[1m\]$/i, "").toLowerCase();
+  if (requested) {
+    let matches = config.models.filter((id) => native(id) === native(requested));
+    const sameWindow = matches.filter((id) => /\[1m\]$/i.test(id) === /\[1m\]$/i.test(requested));
+    if (sameWindow.length) matches = sameWindow;
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      const prefix = config.model.slice(0, config.model.lastIndexOf("/") + 1);
+      const preferred = matches.filter((id) => prefix && id.startsWith(prefix));
+      if (preferred.length === 1) return preferred[0];
+      if (matches.includes(config.model)) return config.model;
+      throw new Error("Native model name matches multiple configured routes; choose its provider-qualified ID");
+    }
+  }
   if (/^(?:claude-)?haiku(?:-|$)/i.test(requested || "")) return config.smallModel;
   if (config.managed || !requested || /^(?:claude-|sonnet|opus|haiku)/i.test(requested)) return config.model;
   return requested;

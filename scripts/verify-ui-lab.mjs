@@ -172,6 +172,8 @@ try {
     return false;
   }, 90000);
   assert.ok(requests.every((request) => profiles.profiles[0].models.includes(request.model)));
+  assert.ok(requests.some((request) => request.model === "fixture/claude-sonnet-5-5"),
+    "The resumed native Sonnet model must not silently become the default Opus route");
   result.checks.nativeCodeUsesConfiguredGateway = true;
   await until(async () => {
     for (const frame of await frames()) {

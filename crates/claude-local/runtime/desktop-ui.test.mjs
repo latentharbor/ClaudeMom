@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
-import { gatewayBody, runtimeConfig } from "./runtime.mjs";
+import { gatewayBody, gatewayModel, runtimeConfig } from "./runtime.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-ui-profile-"));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -73,4 +73,13 @@ test("UI adaptation preserves gateway model, effort and thinking payload", () =>
       thinking: { type: "adaptive" }, output_config: { effort }, stream: true };
     assert.deepEqual(JSON.parse(gatewayBody(config, Buffer.from(JSON.stringify(body)))), body);
   }
+});
+
+test("native Code model choices resolve to their configured gateway routes", () => {
+  const config = { model: "team-a/claude-opus-5-5", smallModel: "team-a/claude-haiku-5-5",
+    managed: true, models: ["team-a/claude-opus-5-5", "team-a/claude-sonnet-5-5", "team-b/claude-sonnet-5-5", "team-a/claude-sonnet-5-5[1m]"] };
+  assert.equal(gatewayModel(config, "claude-sonnet-5-5"), "team-a/claude-sonnet-5-5");
+  assert.equal(gatewayModel(config, "claude-sonnet-5-5[1m]"), "team-a/claude-sonnet-5-5[1m]");
+  assert.equal(gatewayModel(config, "team-b/claude-sonnet-5-5"), "team-b/claude-sonnet-5-5");
+  assert.throws(() => gatewayModel({ ...config, model: "group/default" }, "claude-sonnet-5-5"), /multiple configured routes/);
 });
