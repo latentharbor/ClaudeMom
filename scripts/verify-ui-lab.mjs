@@ -132,6 +132,31 @@ try {
   fs.writeFileSync(path.join(output, "ui-text.json"), JSON.stringify(text, null, 2));
   result.checks.fixtureVisible = text.some((frame) => frame.body?.includes("UI Lab fixture"));
   assert.equal(result.checks.fixtureVisible, true, "The isolated Desktop session fixture must be visible");
+  // Choose a model through the native control, rather than relying on the
+  // account rollout's default model during session adoption.
+  await until(async () => {
+    for (const frame of await frames()) {
+      try {
+        if (await evaluate(frame, `(() => {
+          const button=[...document.querySelectorAll('button,[role="button"],[role="combobox"]')].find(e => /(?:Opus|Sonnet|Haiku|Fable) 5\\./.test(e.textContent) && e.getBoundingClientRect().width>20);
+          if(!button)return false;button.click();return true;
+        })()`)) return true;
+      } catch {}
+    }
+    return false;
+  }, 20000);
+  await until(async () => {
+    for (const frame of await frames()) {
+      try {
+        if (await evaluate(frame, `(() => {
+          const option=[...document.querySelectorAll('[role="menuitem"],[role="menuitemradio"],[role="option"],button')].find(e => /Sonnet 5\\.5/.test(e.textContent) && e.getBoundingClientRect().width>20);
+          if(!option)return false;option.click();return true;
+        })()`)) return true;
+      } catch {}
+    }
+    return false;
+  }, 20000);
+  result.checks.nativeSonnetSelected = true;
   let editorFrame;
   await until(async () => {
     for (const frame of await frames()) {
