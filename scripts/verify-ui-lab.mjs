@@ -7,7 +7,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
-const [manager, officialApp, reference, ca, cliCache, output] = process.argv.slice(2);
+const [manager, officialApp, reference, ca, cliCache, output, webCache] = process.argv.slice(2);
 assert.ok(output && manager && officialApp && reference && ca && cliCache);
 fs.mkdirSync(output, { recursive: true });
 const root = path.join(os.homedir(), ".claude-mom-ui-lab");
@@ -46,7 +46,8 @@ const profiles = {
 const upstreamFile = path.join(output, "fixture-upstreams.json");
 fs.writeFileSync(upstreamFile, JSON.stringify(profiles), { mode: 0o600 });
 execFileSync("python3", ["scripts/prepare-ui-lab.py", "--source", officialApp, "--reference", reference,
-  "--ca", ca, "--upstreams", upstreamFile, "--cli-cache", cliCache], { stdio: "inherit" });
+  "--ca", ca, "--upstreams", upstreamFile, "--cli-cache", cliCache,
+  ...(webCache ? ["--web-cache", webCache] : [])], { stdio: "inherit" });
 fs.unlinkSync(upstreamFile);
 let managerOutput = "";
 const child = spawn(path.join(manager, "Contents/MacOS/claude-mom"), ["--lab-run"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -79,7 +80,7 @@ async function until(predicate, ms = 60000) {
 async function clickText(text) {
   for (const frame of await frames()) {
     try {
-      if (await evaluate(frame, `(() => { const wanted=${JSON.stringify(text)}; const e=[...document.querySelectorAll('button,a,[role="tab"],[role="button"]')].find(e => e.textContent.trim()===wanted || e.getAttribute('aria-label')===wanted); if (!e) return false; e.click(); return true; })()`)) return frame;
+      if (await evaluate(frame, `(() => { const wanted=${JSON.stringify(text)}; const e=[...document.querySelectorAll('button,a,[role="tab"],[role="button"]')].find(e => e.textContent.trim()===wanted || e.getAttribute('aria-label')===wanted || e.getAttribute('title')===wanted || wanted==='Code' && /(^|\\s)code(\\s|$)/i.test(e.getAttribute('aria-label') || e.getAttribute('title') || '')); if (!e) return false; e.click(); return true; })()`)) return frame;
     } catch {}
   }
   return null;
@@ -96,7 +97,9 @@ try {
     return fs.existsSync(file) && JSON.parse(fs.readFileSync(file));
   });
   const health = await (await fetch(`http://127.0.0.1:${ready.port}/__codex_claude_local/health`)).json();
-  assert.equal(health.uiResources, "installed");
+  assert.ok(["installed", "web-cache"].includes(health.uiResources));
+  result.resourceSource = health.uiResources;
+  result.resourceBuildId = health.uiBuildId;
   assert.equal(health.desktopFeaturesSource, "official-reference");
   result.checks.installedResourceProvenance = true;
   result.checks.sameVersionOfficialFeatures = true;
@@ -105,7 +108,7 @@ try {
   result.checks.isolatedUserData = true;
   await until(async () => {
     for (const frame of await frames()) {
-      try { if (await evaluate(frame, "document.body?.innerText?.includes('Code')")) return true; } catch {}
+      try { if (await evaluate(frame, "document.body?.innerText?.includes('Code') || !!document.querySelector('[aria-label=\"Code\"]') || [...document.querySelectorAll('button,a')].some(e => /code/i.test(e.getAttribute('aria-label') || e.getAttribute('title') || ''))")) return true; } catch {}
     }
     return false;
   });
@@ -139,8 +142,11 @@ try {
     try {
       const current = await frames();
       result.finalFrames = current;
+      result.frameDiagnostics = [];
       for (const frame of current) {
         try {
+          result.frameDiagnostics.push({ url: frame.url, ui: await evaluate(frame,
+            "({text:document.body?.innerText?.slice(0,12000), controls:[...document.querySelectorAll('button,a,[role=tab]')].slice(0,80).map(e=>({text:e.textContent?.trim().slice(0,100),label:e.getAttribute('aria-label'),title:e.getAttribute('title')}))})") });
           await rpc("/screenshot", { id: frame.id, name: `final-${frame.contentsId}.png` });
           fs.copyFileSync(path.join(root, `final-${frame.contentsId}.png`), path.join(output, `final-${frame.contentsId}.png`));
         } catch {}

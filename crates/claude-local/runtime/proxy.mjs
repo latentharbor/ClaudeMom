@@ -28,13 +28,14 @@ import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-
 import { createStateStore, dropUnroutedModels, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
 import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
+import { selectUiResources } from "./ui-resources.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const runtime = runtimeConfig();
 const officialAssets = runtime.managed
   ? createOfficialAssets(process.env.CLAUDE_LOCAL_DESKTOP_RESOURCES)
   : null;
-const installedResources = runtime.managed && !runtime.recordedDir;
+const managedResources = runtime.managed && !runtime.recordedDir;
 const desktopUi = loadDesktopUiProfile(process.env.CLAUDE_LOCAL_DESKTOP_FEATURES_FILE,
   process.env.CLAUDE_LOCAL_DESKTOP_VERSION);
 const LOCALIZATION_SHIM_PATH = "/__codex_plus/claude-localization.js";
@@ -107,6 +108,8 @@ const POC_I18N = path.join(POC_DIR ?? here, "i18n");
 // 完全没有模板数据时保持合成兜底（officialShell/localBootstrap + 状态告警）。
 const dataManaged = runtime.managed && !POC_DIR;
 const READ_CACHE = POC_DIR ? path.join(POC_DIR, ".cache") : CACHE_DIR;
+const uiResources = managedResources ? selectUiResources(officialAssets, READ_CACHE, desktopUi.web) : null;
+const installedResources = managedResources && uiResources.kind === "installed";
 const LOG = arg("log", "1") !== "0";
 const READY_FILE = process.env.CLAUDE_LOCAL_READY_FILE;
 const INSTANCE_ID = process.env.CLAUDE_LOCAL_INSTANCE_ID || crypto.randomUUID();
@@ -359,7 +362,7 @@ function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
     lastClientAt, ...(persistenceWarning || desktopUi.warning ? { warning: persistenceWarning || desktopUi.warning } : {}),
-    ...(runtime.managed ? { uiResources: installedResources ? "installed" : "recorded", uiBuildId: officialAssets.buildId, desktopFeaturesSource: desktopUi.source } : {}),
+    ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source } : {}),
   };
 }
 
@@ -733,9 +736,9 @@ function resolvedBootstrap() {
   };
   if (runtime.cowork) forceCowork(result, template);
   mergePoolModels(result);
-  if (installedResources) {
-    result.gated_imports_build_id = officialAssets.buildId;
-    result.gated_imports = structuredClone(officialAssets.gatedImports);
+  if (managedResources) {
+    result.gated_imports_build_id = uiResources.buildId;
+    result.gated_imports = structuredClone(uiResources.gatedImports);
   }
   resolvedBootstrapCache = result;
   return result;
@@ -1648,7 +1651,7 @@ function handle(req, res, hostHeader) {
 
   // Fresh受管profile直接使用安装包内同一版本的官方SPA和静态资源，不依赖旧HTML录制缓存。
   if (
-    installedResources &&
+    managedResources &&
     MODE === "mock" &&
     isMainClaudeHost &&
     req.method === "GET" &&
@@ -1657,10 +1660,10 @@ function handle(req, res, hostHeader) {
   ) {
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
-      "content-length": Buffer.byteLength(officialShell),
+      "content-length": Buffer.byteLength(uiResources.kind === "installed" ? officialShell : addLocalizationShim(uiResources.html, officialAssets.i18nLocales)),
       "cache-control": "no-cache",
     });
-    return res.end(officialShell);
+    return res.end(uiResources.kind === "installed" ? officialShell : addLocalizationShim(uiResources.html, officialAssets.i18nLocales));
   }
 
   if (

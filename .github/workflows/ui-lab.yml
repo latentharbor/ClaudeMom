@@ -35,7 +35,7 @@ jobs:
         working-directory: crates/claude-local/runtime
         run: |
           bash scripts/gen-ca.sh
-          node --test --test-timeout=120000 managed.test.mjs proxy.test.mjs desktop-ui.test.mjs scripts/*.test.mjs
+          node --test --test-timeout=120000 managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs scripts/*.test.mjs
       - name: Rust isolation and host contracts
         run: cargo test --workspace
       - name: Build the separate ad-hoc signed lab application
@@ -75,6 +75,7 @@ jobs:
           (cd fixture && shasum -a 256 -c SHA256SUMS)
           ditto -x -k fixture/Claude-5.11492.5.zip fixture
           ditto -x -k fixture/cli-cache-2.1.325.zip fixture
+          ditto -x -k fixture/web-cache.zip fixture
           ditto -x -k downloads/ClaudeMom-UI-Lab.zip lab-build
           codesign --verify --deep --strict fixture/Claude.app
           cd crates/claude-local/runtime
@@ -88,7 +89,8 @@ jobs:
             "$PWD/fixture/desktop-features.json" \
             "$PWD/crates/claude-local/runtime/ca" \
             "$PWD/fixture/cli-cache" \
-            "$PWD/native-evidence"
+            "$PWD/native-evidence" \
+            "$PWD/fixture/web-cache"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

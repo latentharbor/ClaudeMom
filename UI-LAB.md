@@ -1,9 +1,12 @@
 # Desktop UI compatibility lab
 
 This branch keeps the official Desktop application intact. The managed
-proxy serves the installed version's HTML, scripts and bundled gated-import
-manifest together. An API bootstrap template no longer selects recorded HTML
-or an old dependency graph. Explicit developer recordings remain opt-in.
+proxy uses the installed version's HTML, scripts and bundled gated-import
+manifest as an offline baseline. A newer official web document is retained
+when its build ID matches a captured current bootstrap dependency manifest.
+Thus the older packaged SPA cannot replace a newer official web deployment,
+and a recorded API template cannot silently select mismatched imports.
+Explicit developer recordings remain opt-in.
 
 An optional private `claude-local/desktop-features.json` can contain a response
 captured by the owner from the official Desktop feature endpoint:
@@ -26,6 +29,12 @@ profile is labeled, and explicit local computer-use controls take precedence.
 No session cookie, account entitlement, inference model or thinking payload is
 changed by this feature response. A feature entry does not implement its cloud
 backend or establish that a cloud feature works.
+
+The profile may also hold `web: {buildId, gatedImports}` from the owner's
+current official bootstrap response. This contains resource metadata, not
+the account object or its cookies. A web cache is used only when its own build
+ID matches that metadata and its embedded build time is at least as recent
+as the installed document. Unknown or broken caches fall back to the package.
 
 The lab build has a different application identifier, port and state directory
 (`~/.claude-mom-ui-lab`). It cannot launch the production Desktop, import live

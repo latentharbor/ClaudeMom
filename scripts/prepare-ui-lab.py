@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--ca', required=True, type=Path)
     parser.add_argument('--upstreams', required=True, type=Path)
     parser.add_argument('--cli-cache', type=Path)
+    parser.add_argument('--web-cache', type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     root = Path.home() / '.claude-mom-ui-lab'
@@ -102,6 +103,8 @@ def main():
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True, capture_output=True)
     runtime = root / 'claude-local'
     runtime.mkdir(mode=0o700)
+    if args.web_cache:
+        shutil.copytree(args.web_cache, runtime / '.cache')
     shutil.copytree(args.ca, runtime / 'ca')
     shutil.copy2(args.reference, runtime / 'desktop-features.json')
     shutil.copy2(args.upstreams, root / 'upstreams.json')

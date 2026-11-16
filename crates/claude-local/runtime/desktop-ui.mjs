@@ -25,8 +25,12 @@ export function loadDesktopUiProfile(file, desktopVersion, now = Date.now()) {
           !Object.hasOwn(feature, "value") || typeof feature.on !== "boolean" ||
           typeof feature.off !== "boolean" || typeof feature.source !== "string") throw new Error("feature");
     }
+    const web = record(profile.web) && typeof profile.web.buildId === "string" &&
+      /^[a-zA-Z0-9_-]{1,128}$/.test(profile.web.buildId) && record(profile.web.gatedImports)
+      ? profile.web : null;
     return {
       features: profile.features,
+      web,
       source: "official-reference",
       warning: now - captured > WEEK
         ? "Desktop UI reference is older than seven days; refresh it to follow the official rollout."
