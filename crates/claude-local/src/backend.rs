@@ -49,6 +49,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../runtime/ui-resources.mjs"),
     ),
     (
+        "site-policy.mjs",
+        include_bytes!("../runtime/site-policy.mjs"),
+    ),
+    (
         "conversation-service.mjs",
         include_bytes!("../runtime/conversation-service.mjs"),
     ),

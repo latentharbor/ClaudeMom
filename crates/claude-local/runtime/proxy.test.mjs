@@ -58,12 +58,12 @@ async function response(req, body) {
   return result;
 }
 
-async function request(pathname, { host, body, method = body === undefined ? "GET" : "POST", beforeBody } = {}) {
+async function request(pathname, { host, body, method = body === undefined ? "GET" : "POST", beforeBody, extraHeaders = {} } = {}) {
   const raw = body === undefined ? undefined : JSON.stringify(body);
-  const headers = raw === undefined ? {} : {
+  const headers = { ...(raw === undefined ? {} : {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(raw),
-  };
+  }), ...extraHeaders };
   const send = async (req) => {
     if (beforeBody) {
       req.setHeader("expect", "100-continue");
@@ -379,6 +379,21 @@ after(async () => {
     }
     fs.rmdirSync(dictationCacheDir);
   }
+});
+
+test("site policy routes bypass the generic API mock on all native API aliases", async () => {
+  const before = gatewayRequests.length;
+  for (const host of ["claude.ai", "claude.com", "api.anthropic.com"]) {
+    const result = await request("/api/web/url_hash_check/browser_extension", { host, body: { url: "file:///private" } });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.type, "invalid_site_policy_request");
+    assert.equal(result.body.category, undefined);
+  }
+  assert.equal(gatewayRequests.length, before);
+});
+test("site policy legacy queries reject ambiguous input rather than returning an empty success", async () => {
+  const result = await request("/api/web/domain_info/browser_extension?domain=a&domain=b", { host: "claude.ai" });
+  assert.equal(result.status, 400); assert.equal(result.body.error.reason, "invalid_domain");
 });
 
 test("mock mode serves the patched dictation module with the CDN cross-origin contract", async () => {

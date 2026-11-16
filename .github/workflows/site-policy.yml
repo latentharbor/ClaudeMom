@@ -1,0 +1,25 @@
+name: Site policy compatibility
+on:
+  push:
+    branches: [fix-site-policy]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Classification, privacy and failure handling
+        working-directory: crates/claude-local/runtime
+        run: node --test --test-timeout=30000 site-policy.test.mjs
+      - name: Native HTTPS route and runtime packaging
+        working-directory: crates/claude-local/runtime
+        run: |
+          bash scripts/gen-ca.sh
+          node --test --test-timeout=30000 --test-name-pattern='site policy' proxy.test.mjs
+          node --test --test-timeout=30000 --test-name-pattern='managed readiness' managed.test.mjs

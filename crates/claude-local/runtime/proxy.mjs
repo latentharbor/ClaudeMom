@@ -29,6 +29,7 @@ import { createStateStore, dropUnroutedModels, gatewayBody, gatewayModel, gatewa
 import { createOfficialAssets } from "./official-assets.mjs";
 import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
 import { selectUiResources } from "./ui-resources.mjs";
+import { createSitePolicyHandler, isSitePolicyUrl } from "./site-policy.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const runtime = runtimeConfig();
@@ -1554,6 +1555,9 @@ function proxyUpstream(req, res, url) {
   req.pipe(upstreamReq);
 }
 
+const handleSitePolicy = createSitePolicyHandler({ request: upstreamRequest,
+  onFailure: reason => log(`SITE POLICY UNAVAILABLE ${reason}`) });
+
 // ── 请求处理 ─────────────────────────────────────────────────
 const demoHtml = MODE === "demo" ? fs.readFileSync(path.join(here, "demo", "index.html")) : null;
 
@@ -1565,6 +1569,9 @@ function handle(req, res, hostHeader) {
 
   const hostName = url.hostname.toLowerCase();
   const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
+  // A missing policy verdict must never fall through to the generic {} mock.
+  // Keep the official anonymous classification, including denies/high risk.
+  if (MODE === "mock" && isSitePolicyUrl(url)) return handleSitePolicy(req, res, url);
   if (MODE === "mock" && req.method === "GET" &&
       (isMainClaudeHost || hostName === "api.anthropic.com") &&
       /^\/api\/(?:organizations\/[^/]+\/)?model_selector\/[^/]+\/?$/.test(url.pathname)) {
