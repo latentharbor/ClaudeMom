@@ -126,15 +126,18 @@ def main():
     record = {'sessionId': 'local_' + session_id, 'cliSessionId': session_id, 'cwd': str(scratch),
         'originCwd': str(scratch), 'createdAt': 1794790000000, 'lastActivityAt': 1794790000000,
         'isArchived': False, 'title': 'UI Lab fixture', 'titleSource': 'manual', 'permissionMode': 'default',
-        'sessionPermissionUpdates': [], 'alwaysAllowedReasons': []}
+        'sessionPermissionUpdates': [], 'alwaysAllowedReasons': [],
+        'fromCliTranscript': True, 'adoptedFromOtherSurface': True}
     directory = user_data / 'claude-code-sessions/c46bd1eb-fbbf-4e5a-9bb3-5ebe8521eb54/e0e877d3-8475-44a1-a501-4fc431b085ab'
     directory.mkdir(parents=True)
     (directory / (record['sessionId'] + '.json')).write_text(json.dumps(record))
     project = ''.join(c if c.isalnum() or c == '-' else '-' for c in str(scratch))
     transcripts = home / '.claude-desktop-local/claude-code/projects' / project
     transcripts.mkdir(parents=True)
+    (home / '.claude').symlink_to(home / '.claude-desktop-local/claude-code', target_is_directory=True)
     parent, reply = str(uuid.uuid4()), str(uuid.uuid4())
-    common = {'sessionId': session_id, 'cwd': str(scratch), 'isSidechain': False, 'version': '2.1.325'}
+    common = {'sessionId': session_id, 'cwd': str(scratch), 'isSidechain': False, 'version': '2.1.325',
+        'userType': 'external', 'gitBranch': 'ui-lab'}
     rows = [{**common, 'type': 'user', 'uuid': parent, 'parentUuid': None, 'timestamp': '2026-11-16T03:00:00Z', 'message': {'role': 'user', 'content': 'UI fixture'}},
         {**common, 'type': 'assistant', 'uuid': reply, 'parentUuid': parent, 'timestamp': '2026-11-16T03:00:01Z', 'message': {'id': 'msg_ui_fixture', 'type': 'message', 'role': 'assistant', 'model': 'claude-opus-5-5', 'content': [{'type': 'text', 'text': 'UI fixture ready'}], 'stop_reason': 'end_turn', 'stop_sequence': None, 'usage': {'input_tokens': 1, 'output_tokens': 3}}}]
     (transcripts / (session_id + '.jsonl')).write_text(''.join(json.dumps(row) + '\n' for row in rows))

@@ -115,6 +115,7 @@ try {
   result.checks.codeEntryRendered = true;
   const clicked = await clickText("Code");
   result.checks.codeNavigationClicked = !!clicked;
+  assert.ok(clicked, "Click the actual native Code navigation control");
   await delay(3000);
   await clickText("UI Lab fixture");
   await delay(3000);
@@ -129,6 +130,40 @@ try {
   fs.writeFileSync(path.join(output, "ui-text.json"), JSON.stringify(text, null, 2));
   result.checks.fixtureVisible = text.some((frame) => frame.body?.includes("UI Lab fixture"));
   assert.equal(result.checks.fixtureVisible, true, "The isolated Desktop session fixture must be visible");
+  let editorFrame;
+  await until(async () => {
+    for (const frame of await frames()) {
+      try {
+        const found = await evaluate(frame, `(() => {
+          const e=[...document.querySelectorAll('textarea,[contenteditable="true"]')].find(e => e.getBoundingClientRect().width>20 && e.getBoundingClientRect().height>10);
+          if(!e)return false; e.focus();
+          if(e.tagName==='TEXTAREA') { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'UI_LAB_ROUTING');e.dispatchEvent(new Event('input',{bubbles:true})); }
+          else document.execCommand('insertText',false,'UI_LAB_ROUTING');
+          return true;
+        })()`);
+        if(found) { editorFrame=frame;return true; }
+      } catch {}
+    }
+    return false;
+  }, 30000);
+  await evaluate(editorFrame, `(() => {
+    const e=document.activeElement;
+    const form=e.closest('form');
+    if(form && typeof form.requestSubmit==='function') { form.requestSubmit();return 'form'; }
+    const button=[...document.querySelectorAll('button')].find(e => !e.disabled && /^(send|send message|发送|发送消息)$/i.test(e.getAttribute('aria-label') || e.getAttribute('title') || e.textContent.trim()));
+    if(button) { button.click();return 'button'; }
+    e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return 'enter';
+  })()`);
+  await until(() => requests.length > 0, 90000);
+  assert.ok(requests.every((request) => profiles.profiles[0].models.includes(request.model)));
+  result.checks.nativeCodeUsesConfiguredGateway = true;
+  await until(async () => {
+    for (const frame of await frames()) {
+      try { if(await evaluate(frame, "document.body?.innerText?.includes('UI_LAB_ROUTING_OK')")) return true; } catch {}
+    }
+    return false;
+  }, 45000);
+  result.checks.nativeCodeReplyRendered = true;
   // The manager's copied resource file and captured screenshots are the native
   // UI check. Payload preservation is covered independently by runtime CI.
   for (const file of fs.readdirSync(root).filter((file) => /^frame-\d+\.png$/.test(file))) {
@@ -155,6 +190,10 @@ try {
   }
   fs.writeFileSync(path.join(output, "native-results.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(output, "manager-output.txt"), managerOutput);
+  for (const name of ["desktop.log", "logs/main.log", "logs/renderer.log"]) {
+    const file=path.join(root,name);
+    if(fs.existsSync(file)) fs.writeFileSync(path.join(output,path.basename(name)),fs.readFileSync(file).subarray(-40000));
+  }
   child.stdin.end();
   await Promise.race([once(child, "exit"), delay(10000)]);
   if (child.exitCode === null) child.kill("SIGTERM");
