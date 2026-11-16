@@ -226,10 +226,21 @@ function normalizeMember(pathname) {
 export function createOfficialAssets(resourcesDir) {
   if (!resourcesDir) return null;
   const archive = openArchive(resourcesDir);
+  let gatedImports = {};
+  const gatedEntry = archive.entries.get("custom-3p-gated-imports.json");
+  if (gatedEntry && gatedEntry.size <= MAX_RESOURCE_BYTES) {
+    const manifest = JSON.parse(archive.readEntry(gatedEntry).toString("utf8"));
+    if (manifest.buildId !== archive.buildId || !manifest.imports || typeof manifest.imports !== "object" || Array.isArray(manifest.imports)) {
+      archive.close();
+      throw new Error("Claude Desktop gated imports do not match the installed web entry");
+    }
+    gatedImports = manifest.imports;
+  }
   let closed = false;
   return {
     archivePath: archive.archivePath,
     buildId: archive.buildId,
+    gatedImports,
     indexHtml: archive.indexHtml,
     i18nLocales: archive.i18nLocales,
     read(pathname) {

@@ -1,0 +1,53 @@
+name: UI lab
+on:
+  push:
+    branches: [ui-parity-lab]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ui-lab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify-build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      CLAUDE_MOM_LAB_BUILD: '1'
+      VITE_CLAUDE_MOM_LAB_BUILD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/claude-mom/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Frontend contracts
+        working-directory: apps/claude-mom
+        run: |
+          npm ci
+          npm run check
+          npm test
+      - name: Runtime routing, resources and UI profile contracts
+        working-directory: crates/claude-local/runtime
+        run: |
+          bash scripts/gen-ca.sh
+          node --test --test-timeout=120000 managed.test.mjs proxy.test.mjs desktop-ui.test.mjs scripts/*.test.mjs
+      - name: Rust isolation and host contracts
+        run: cargo test --workspace
+      - name: Build the separate ad-hoc signed lab application
+        working-directory: apps/claude-mom
+        run: npm run tauri -- build --bundles app --config src-tauri/tauri.lab.conf.json
+      - name: Verify and package
+        run: |
+          codesign --verify --deep --strict 'target/release/bundle/macos/ClaudeMom UI Lab.app'
+          mkdir -p artifacts
+          ditto -c -k --keepParent 'target/release/bundle/macos/ClaudeMom UI Lab.app' artifacts/ClaudeMom-UI-Lab.zip
+          shasum -a 256 artifacts/ClaudeMom-UI-Lab.zip > artifacts/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeMom-UI-Lab
+          path: artifacts/
+          if-no-files-found: error

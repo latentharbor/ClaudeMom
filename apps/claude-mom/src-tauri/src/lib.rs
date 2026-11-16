@@ -25,7 +25,7 @@ pub fn run() {
     let guard_port = std::env::var("CLAUDE_MOM_GUARD_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(GUARD_PORT);
+        .unwrap_or(if host::is_lab_build() { 57529 } else { GUARD_PORT });
     // 已经有一个在跑：交给系统把它带到前台（macOS 上 open 同一个 app 即可），自己退出。
     let Ok(_guard) = std::net::TcpListener::bind(("127.0.0.1", guard_port)) else {
         log::append("app.already_running", serde_json::json!({ "port": guard_port }));

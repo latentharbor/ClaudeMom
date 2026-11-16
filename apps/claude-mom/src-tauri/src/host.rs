@@ -10,6 +10,11 @@ use serde_json::{Map, Value};
 
 /// 状态目录：`CLAUDE_MOM_STATE_DIR` 覆盖，否则 `~/.claude-mom`。
 pub fn state_dir() -> PathBuf {
+    if is_lab_build() {
+        return directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(".claude-mom-ui-lab"))
+            .unwrap_or_else(|| PathBuf::from(".claude-mom-ui-lab"));
+    }
     if let Some(dir) = std::env::var_os("CLAUDE_MOM_STATE_DIR")
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
@@ -19,6 +24,10 @@ pub fn state_dir() -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".claude-mom"))
         .unwrap_or_else(|| PathBuf::from(".claude-mom"))
+}
+
+pub fn is_lab_build() -> bool {
+    option_env!("CLAUDE_MOM_LAB_BUILD") == Some("1")
 }
 
 fn settings_path() -> PathBuf {
@@ -71,6 +80,14 @@ impl Host for ClaudeMomHost {
         state_dir()
     }
 
+    fn isolated_desktop_app(&self) -> Option<PathBuf> {
+        is_lab_build().then(|| state_dir().join("Claude UI Lab.app"))
+    }
+
+    fn isolated_desktop_home(&self) -> Option<PathBuf> {
+        is_lab_build().then(|| state_dir().join("profile-home"))
+    }
+
     fn ca_name(&self) -> &str {
         "ClaudeMom Local CA"
     }
@@ -93,6 +110,11 @@ impl Host for ClaudeMomHost {
         // Code 页签默认和命令行共用 ~/.claude（填上实际生效的值，界面才显示得对）。
         if config.code_share_home.is_none() {
             config.code_share_home = Some(self.default_code_share_home());
+        }
+        if is_lab_build() {
+            config.code_share_home = Some(false);
+            config.import_cli_sessions = false;
+            config.session_sync = false;
         }
         Ok(config)
     }

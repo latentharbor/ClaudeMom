@@ -46,6 +46,16 @@ pub trait Host: Send + Sync {
     /// 宿主的状态目录：本地服务的文件放在 `<state>/claude-local`，听写凭据等也在这里。
     fn state_dir(&self) -> PathBuf;
 
+    /// An isolated build must never fall back to the installed production app.
+    fn isolated_desktop_app(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Private base for profile/session paths in an isolated build; not HOME.
+    fn isolated_desktop_home(&self) -> Option<PathBuf> {
+        None
+    }
+
     /// 证书在系统钥匙串 / 证书库里的名字，两个宿主各用各的，互不覆盖。
     fn ca_name(&self) -> &str;
 
@@ -110,6 +120,14 @@ pub fn install_host(host: Arc<dyn Host>) -> bool {
 
 pub(crate) fn host() -> &'static Arc<dyn Host> {
     HOST.get().expect("claude_local::install_host 必须在使用前调用")
+}
+
+pub(crate) fn isolated_desktop_app() -> Option<PathBuf> {
+    HOST.get().and_then(|host| host.isolated_desktop_app())
+}
+
+pub(crate) fn isolated_desktop_home() -> Option<PathBuf> {
+    HOST.get().and_then(|host| host.isolated_desktop_home())
 }
 
 pub(crate) fn diagnostic(event: &str, detail: Value) {

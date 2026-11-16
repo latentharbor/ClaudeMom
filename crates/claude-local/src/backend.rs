@@ -41,6 +41,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../runtime/official-assets.mjs"),
     ),
     (
+        "desktop-ui.mjs",
+        include_bytes!("../runtime/desktop-ui.mjs"),
+    ),
+    (
         "conversation-service.mjs",
         include_bytes!("../runtime/conversation-service.mjs"),
     ),
@@ -169,6 +173,9 @@ fn root_dir() -> PathBuf {
 }
 
 fn home_dir() -> PathBuf {
+    if let Some(home) = crate::host::isolated_desktop_home() {
+        return home;
+    }
     directories::BaseDirs::new()
         .map(|base| base.home_dir().to_path_buf())
         .unwrap_or_default()
@@ -183,6 +190,9 @@ fn platform_supported() -> bool {
 /// 轮询），结果做进程内缓存：缓存路径已不存在且不是 MSIX 路径时才重新解析。
 #[cfg(target_os = "windows")]
 fn source_app() -> PathBuf {
+    if let Some(app) = crate::host::isolated_desktop_app() {
+        return app;
+    }
     static CACHE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     let mut slot = cache.lock().unwrap_or_else(|error| error.into_inner());
@@ -205,6 +215,9 @@ fn source_app() -> PathBuf {
 
 #[cfg(not(target_os = "windows"))]
 fn source_app() -> PathBuf {
+    if let Some(app) = crate::host::isolated_desktop_app() {
+        return app;
+    }
     let system = PathBuf::from("/Applications/Claude.app");
     if system.is_dir() {
         system
@@ -267,8 +280,8 @@ fn full_code_dir(root: &Path) -> PathBuf {
 }
 
 fn shared_full_code_dir() -> Option<PathBuf> {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".claude-desktop-local").join("claude-code"))
+    let home = home_dir();
+    (!home.as_os_str().is_empty()).then(|| home.join(".claude-desktop-local").join("claude-code"))
 }
 
 /// 这次启动 Code 页签是否和命令行共用 `~/.claude`。
@@ -895,6 +908,20 @@ fn is_desktop_claude_image(exe_file: &str, path: Option<&Path>) -> bool {
 fn claude_processes() -> Result<String> {
     #[cfg(target_os = "macos")]
     {
+        if let Some(app) = crate::host::isolated_desktop_app() {
+            let binary = executable(&app).to_string_lossy().into_owned();
+            let (success, bytes) = probe(
+                Command::new("/bin/ps").args(["-ax", "-o", "pid=,command="]),
+                PROBE_TIMEOUT,
+            )?;
+            ensure!(success, "Cannot inspect isolated Desktop processes");
+            let lines = String::from_utf8_lossy(&bytes);
+            return Ok(lines.lines().filter(|line| {
+                let command = line.trim_start().split_once(char::is_whitespace)
+                    .map(|(_, rest)| rest.trim_start()).unwrap_or("");
+                command == binary.as_str() || command.strip_prefix(binary.as_str()).is_some_and(|tail| tail.starts_with(' '))
+            }).collect::<Vec<_>>().join("\n"));
+        }
         let (success, bytes) = probe(
             Command::new("/usr/bin/pgrep").args(["-fl", "/Contents/MacOS/Claude( |$)"]),
             PROBE_TIMEOUT,
@@ -1209,7 +1236,9 @@ fn untrust_ca(root: &Path) -> Result<()> {
 }
 
 fn config_hash(config: &ClaudeLocalSettings) -> String {
-    hash_with_desktop(config, host().upstream_fingerprint(config), desktop_fingerprint())
+    let base = hash_with_desktop(config, host().upstream_fingerprint(config), desktop_fingerprint());
+    let ui_profile = fs::read(root_dir().join("desktop-features.json")).unwrap_or_default();
+    format!("{:x}", Sha256::digest([base.as_bytes(), &ui_profile].concat()))
 }
 
 fn hash_with_desktop(config: &ClaudeLocalSettings, upstream: Value, desktop: Option<(u64, u128)>) -> String {
@@ -1670,6 +1699,8 @@ fn start_backend(
             desktop_resources(&source_app()),
         )
         .env("CLAUDE_LOCAL_GATEWAY_URL", &upstream.root)
+        .env("CLAUDE_LOCAL_DESKTOP_VERSION", version(&source_app()))
+        .env("CLAUDE_LOCAL_DESKTOP_FEATURES_FILE", root.join("desktop-features.json"))
         .env("CLAUDE_LOCAL_GATEWAY_KEY", &upstream.token)
         .env("CLAUDE_LOCAL_GATEWAY_MODEL", &upstream.default_model)
         .env("CLAUDE_LOCAL_GATEWAY_SMALL_MODEL", &upstream.small_model)
@@ -1766,6 +1797,11 @@ fn local_launch_args(_root: &Path, port: u16, localization: bool) -> Vec<String>
     ];
     if localization {
         args.push("--lang=zh-CN".into());
+    }
+    if crate::host::isolated_desktop_app().is_some() {
+        args.push(format!("--user-data-dir={}", home_dir().join("Library/Application Support/Claude").display()));
+        args.push("--use-mock-keychain".into());
+        args.push("--no-first-run".into());
     }
     args
 }
@@ -1973,6 +2009,9 @@ fn launch_original(
             .env("ANTHROPIC_AUTH_TOKEN", &upstream.token)
             .env("NO_PROXY", "localhost,127.0.0.1")
             .env("no_proxy", "localhost,127.0.0.1");
+        if crate::host::isolated_desktop_app().is_some() {
+            command.env("CLAUDE_USER_DATA_DIR", home_dir().join("Library/Application Support/Claude"));
+        }
         for (name, value) in &upstream.extra_env {
             command.env(name, value);
         }

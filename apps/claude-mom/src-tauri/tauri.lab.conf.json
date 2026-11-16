@@ -1,0 +1,18 @@
+{
+  "productName": "ClaudeMom UI Lab",
+  "identifier": "io.latentharbor.claudemom-ui-lab",
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "ClaudeMom UI Lab",
+      "width": 1000,
+      "height": 720,
+      "minWidth": 720,
+      "minHeight": 520,
+      "titleBarStyle": "Overlay",
+      "hiddenTitle": false
+    }]
+  },
+  "bundle": { "createUpdaterArtifacts": false, "targets": ["app"], "macOS": { "signingIdentity": "-" } },
+  "plugins": { "updater": { "endpoints": [] } }
+}

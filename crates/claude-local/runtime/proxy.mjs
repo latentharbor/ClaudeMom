@@ -27,12 +27,16 @@ import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
 import { createStateStore, dropUnroutedModels, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
+import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const runtime = runtimeConfig();
 const officialAssets = runtime.managed
   ? createOfficialAssets(process.env.CLAUDE_LOCAL_DESKTOP_RESOURCES)
   : null;
+const installedResources = runtime.managed && !runtime.recordedDir;
+const desktopUi = loadDesktopUiProfile(process.env.CLAUDE_LOCAL_DESKTOP_FEATURES_FILE,
+  process.env.CLAUDE_LOCAL_DESKTOP_VERSION);
 const LOCALIZATION_SHIM_PATH = "/__codex_plus/claude-localization.js";
 const localizationShim = runtime.managed && !runtime.recordedDir && runtime.localization
   ? fs.readFileSync(path.join(here, "page-shim.js"))
@@ -354,7 +358,8 @@ function jsonWithActiveOrg(res, obj, code = 200) {
 function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
-    lastClientAt, ...(persistenceWarning ? { warning: persistenceWarning } : {}),
+    lastClientAt, ...(persistenceWarning || desktopUi.warning ? { warning: persistenceWarning || desktopUi.warning } : {}),
+    ...(runtime.managed ? { uiResources: installedResources ? "installed" : "recorded", uiBuildId: officialAssets.buildId, desktopFeaturesSource: desktopUi.source } : {}),
   };
 }
 
@@ -728,6 +733,10 @@ function resolvedBootstrap() {
   };
   if (runtime.cowork) forceCowork(result, template);
   mergePoolModels(result);
+  if (installedResources) {
+    result.gated_imports_build_id = officialAssets.buildId;
+    result.gated_imports = structuredClone(officialAssets.gatedImports);
+  }
   resolvedBootstrapCache = result;
   return result;
 }
@@ -858,22 +867,7 @@ function mockApi(req, res, url) {
   }
   // 原生桌面使用已求值的 GrowthBook 结果；用户开关和系统权限仍由客户端检查。
   if (method === "GET" && p === "/api/desktop/features") {
-    const features = {
-      "1291166712": {
-        value: { enabled: runtime.computerUse, appScopedEnabled: runtime.computerUse && runtime.backgroundMode },
-        on: runtime.computerUse, off: !runtime.computerUse, source: "force",
-        experiment: null, experimentResult: null,
-      },
-    };
-    // 后台模式的 macOS 版本上限（Claude 内置默认 26.x，系统更新就提示「暂不支持」）。
-    // 强制开启时把上限抬到 99，新系统也放行。
-    if (runtime.forceBackgroundMode) {
-      features["1346958739"] = {
-        value: { major: 99, minor: 9999 }, on: true, off: false, source: "force",
-        experiment: null, experimentResult: null,
-      };
-    }
-    return json(res, { features });
+    return json(res, desktopFeatures(desktopUi, runtime));
   }
 
   // 账户页会直接读取 reasons.length；本地后端不开放账号删除。
@@ -1597,7 +1591,7 @@ function handle(req, res, hostHeader) {
   }
 
   const officialResourcePath = (() => {
-    if (!dataManaged || !["GET", "HEAD"].includes(req.method)) return null;
+    if (!installedResources || !["GET", "HEAD"].includes(req.method)) return null;
     const mapI18nPath = (pathname) => {
       const match = pathname.match(/^\/i18n\/(?:(s|dynamic)\/)?([a-zA-Z-]+)\.json$/);
       if (!match) return pathname;
@@ -1631,7 +1625,7 @@ function handle(req, res, hostHeader) {
   if (officialResourcePath) {
     const resource = officialAssets.read(officialResourcePath);
     if (!resource) {
-      if (hostName !== "assets-proxy.anthropic.com") {
+      if (installedResources || hostName !== "assets-proxy.anthropic.com") {
         res.writeHead(404, { "cache-control": "no-store" });
         return res.end();
       }
@@ -1654,7 +1648,7 @@ function handle(req, res, hostHeader) {
 
   // Fresh受管profile直接使用安装包内同一版本的官方SPA和静态资源，不依赖旧HTML录制缓存。
   if (
-    dataManaged &&
+    installedResources &&
     MODE === "mock" &&
     isMainClaudeHost &&
     req.method === "GET" &&

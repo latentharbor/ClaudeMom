@@ -176,7 +176,7 @@ before(async () => {
     "audio/tone.mp3": Buffer.from([0x49, 0x44, 0x33]),
   });
   fs.mkdirSync(path.join(root, "runtime", "scripts"), { recursive: true });
-  for (const file of ["proxy.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "scripts/patch-dictation-start.mjs"]) {
+  for (const file of ["proxy.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "desktop-ui.mjs", "scripts/patch-dictation-start.mjs"]) {
     fs.copyFileSync(path.join(here, file), path.join(root, "runtime", file));
   }
   fs.copyFileSync(
@@ -301,7 +301,7 @@ test("fresh managed profile serves the installed official shell and bounded ASAR
   assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
 });
 
-test("installed template fetches the first shell through the configured upstream proxy, then replays it", async () => {
+test("installed template uses packaged resources even with a stale cached shell", async () => {
   // 后端 install_assets 会写入内嵌模板（mock/.codex-plus-template）：模板数据配线上外壳写穿缓存。
   // 受限地区直连 claude.ai 会被 302，首次抓外壳要经后端传入的出站代理（CONNECT 隧道）。
   const connects = [];
@@ -323,8 +323,9 @@ test("installed template fetches the first shell through the configured upstream
   const fresh = await start(env, runtimeDir);
   try {
     const shell = await request(fresh, "/settings/general", { host: "claude.ai" });
-    assert.notEqual(shell.status, 200, "代理拒绝时不能假装拿到了外壳");
-    assert.deepEqual(connects, ["claude.ai:443"], "首次外壳经出站代理去 claude.ai");
+    assert.equal(shell.status, 200);
+    assert.match(shell.bytes.toString("utf8"), /data-build-id="fixture-build"/);
+    assert.deepEqual(connects, [], "installed resources do not need a remote shell");
   } finally {
     await stop(fresh);
   }
@@ -339,7 +340,8 @@ test("installed template fetches the first shell through the configured upstream
   try {
     const shell = await request(recorded, "/settings/general", { host: "claude.ai" });
     assert.equal(shell.status, 200);
-    assert.match(shell.bytes.toString("utf8"), /data-build-id="recorded"/);
+    assert.match(shell.bytes.toString("utf8"), /data-build-id="fixture-build"/);
+    assert.doesNotMatch(shell.bytes.toString("utf8"), /data-build-id="recorded"/);
     assert.deepEqual(connects, []);
   } finally {
     await stop(recorded);
