@@ -1237,7 +1237,10 @@ fn untrust_ca(root: &Path) -> Result<()> {
 
 fn config_hash(config: &ClaudeLocalSettings) -> String {
     let base = hash_with_desktop(config, host().upstream_fingerprint(config), desktop_fingerprint());
-    let ui_profile = fs::read(root_dir().join("desktop-features.json")).unwrap_or_default();
+    let profile = root_dir().join("desktop-features.json");
+    let ui_profile = fs::symlink_metadata(&profile).ok()
+        .filter(|meta| meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= 2 * 1024 * 1024)
+        .and_then(|_| fs::read(&profile).ok()).unwrap_or_default();
     format!("{:x}", Sha256::digest([base.as_bytes(), &ui_profile].concat()))
 }
 
@@ -1902,6 +1905,13 @@ fn via_launch_services(command: &Command, app: &Path) -> Command {
 
 fn spawn_detached(command: &mut Command, source: &Path, failure: &'static str) -> Result<()> {
     #[cfg(target_os = "macos")]
+    if crate::host::isolated_desktop_app().is_some() {
+        let log = private_file(&host().state_dir().join("desktop.log"))?;
+        command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        command.spawn().context(failure)?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
     if source.extension().is_some_and(|extension| extension == "app") && source.is_dir() {
         let output = via_launch_services(command, source)
             .stdin(Stdio::null())
@@ -1985,6 +1995,13 @@ fn launch_original(
     share_home: bool,
 ) -> Result<()> {
     let mut command = hidden_command(executable(source));
+    if crate::host::isolated_desktop_app().is_some() {
+        let mut sandbox = hidden_command("/usr/bin/sandbox-exec");
+        sandbox.arg("-f").arg(host().state_dir().join("isolation.sb"));
+        sandbox.arg(executable(source));
+        command = sandbox;
+        command.env("CLAUDE_MOM_LAB_ROOT", host().state_dir());
+    }
     for name in [
         "ELECTRON_RUN_AS_NODE",
         "ELECTRON_NO_ASAR",

@@ -21,6 +21,22 @@ static EXITING: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
     host::ClaudeMomHost::install();
+    if host::is_lab_build() && std::env::args().any(|arg| arg == "--lab-run") {
+        let result = claude_local::perform("launch");
+        match result {
+            Ok(result) => {
+                println!("{}", serde_json::to_string(&result).unwrap());
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                let _ = claude_local::perform("stop");
+            }
+            Err(error) => {
+                eprintln!("isolated lab launch: {error:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     log::append("app.start", serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }));
     let guard_port = std::env::var("CLAUDE_MOM_GUARD_PORT")
         .ok()

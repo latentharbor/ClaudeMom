@@ -30,6 +30,7 @@ jobs:
           npm ci
           npm run check
           npm test
+          npm run vite:build
       - name: Runtime routing, resources and UI profile contracts
         working-directory: crates/claude-local/runtime
         run: |
@@ -51,3 +52,46 @@ jobs:
           name: ClaudeMom-UI-Lab
           path: artifacts/
           if-no-files-found: error
+  native-ui:
+    needs: verify-build
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: ClaudeMom-UI-Lab
+          path: downloads
+      - name: Prepare private official-app fixture
+        run: |
+          test "$(uname -m)" = arm64
+          mkdir -p fixture lab-build
+          gh release download lab-fixtures-5.11492.5 -R "$GITHUB_REPOSITORY" --dir fixture
+          (cd fixture && shasum -a 256 -c SHA256SUMS)
+          ditto -x -k fixture/Claude-5.11492.5.zip fixture
+          ditto -x -k fixture/cli-cache-2.1.325.zip fixture
+          ditto -x -k downloads/ClaudeMom-UI-Lab.zip lab-build
+          codesign --verify --deep --strict fixture/Claude.app
+          cd crates/claude-local/runtime
+          bash scripts/gen-ca.sh
+          sudo security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain ca/ca.pem
+      - name: Verify the actual isolated Desktop UI
+        run: |
+          node scripts/verify-ui-lab.mjs \
+            "$PWD/lab-build/ClaudeMom UI Lab.app" \
+            "$PWD/fixture/Claude.app" \
+            "$PWD/fixture/desktop-features.json" \
+            "$PWD/crates/claude-local/runtime/ca" \
+            "$PWD/fixture/cli-cache" \
+            "$PWD/native-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Native-UI-evidence
+          path: native-evidence/
+          if-no-files-found: warn

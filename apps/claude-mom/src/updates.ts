@@ -5,6 +5,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { LAB_BUILD } from "./build-mode";
 
 export type UpdateState =
   | { phase: "idle" }
@@ -23,6 +24,7 @@ export async function currentVersion(): Promise<string> {
 }
 
 export async function checkForUpdate(): Promise<UpdateState> {
+  if (LAB_BUILD) return { phase: "latest", version: await currentVersion() };
   try {
     const update = await check();
     if (!update) return { phase: "latest", version: await currentVersion() };
@@ -34,6 +36,7 @@ export async function checkForUpdate(): Promise<UpdateState> {
 
 /** 下载并安装，然后重启。安装前本地服务会随程序退出而停止，Claude 下次启动时重新接上。 */
 export async function installUpdate(update: Update, onProgress: (percent: number | null) => void): Promise<void> {
+  if (LAB_BUILD) throw new Error("The isolated UI lab does not install application updates.");
   let total = 0;
   let received = 0;
   await update.downloadAndInstall((event) => {

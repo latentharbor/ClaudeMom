@@ -22,6 +22,7 @@ import {
   type UpstreamProfile,
 } from "./model";
 import { checkForUpdate, currentVersion, installUpdate, type UpdateState } from "./updates";
+import { APP_NAME } from "./build-mode";
 
 type Tab = "upstream" | "claude";
 type Notice = { text: string; tone: "ok" | "error" } | null;
@@ -230,7 +231,7 @@ export function ClaudeMomApp() {
     <div className="cm-shell">
       <aside className="cm-side">
         <div className="cm-side-head" data-tauri-drag-region>
-          <span className="cm-brand">ClaudeMom</span>
+          <span className="cm-brand">{APP_NAME}</span>
         </div>
         <div className="cm-side-label">上游</div>
         <nav className="cm-list" aria-label="上游">
@@ -691,7 +692,7 @@ function ClaudeSettings({ status, busy, onConfigure, onAction, onVoice, update, 
       </details>
 
       <div className="cm-about">
-        <span>ClaudeMom {version || ""}{status.version ? ` · Claude ${status.version}` : ""}</span>
+        <span>{APP_NAME} {version || ""}{status.version ? ` · Claude ${status.version}` : ""}</span>
         {update.phase === "available" ? (
           <button className="cm-link" onClick={onInstallUpdate} type="button">更新到 {update.version}</button>
         ) : (

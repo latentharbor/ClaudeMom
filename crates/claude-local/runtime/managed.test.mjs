@@ -170,6 +170,7 @@ before(async () => {
   writeAsar(path.join(root, "desktop-resources"), {
     "index.html": '<!doctype html><html data-build-id="fixture-build"><head><meta charset="UTF-8"><link rel="preload" href="/assets/v1/main.js"><script>window.fixtureAppStarted = true;</script><script type="module" src="/assets/v1/main.js"></script></head><body><div id="root"></div></body></html>',
     "assets/v1/main.js": "export const localOfficialAsset = true;",
+    "custom-3p-gated-imports.json": JSON.stringify({ buildId: "fixture-build", imports: { "fixture-ui": { hash: "fixture-lazy", css: [], preload: [] } } }),
     "i18n/en-US.json": JSON.stringify({ greeting: "Hello" }),
     "i18n/dynamic/en-US.json": JSON.stringify({ dynamic: "Hello" }),
     "images/icon.png": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
@@ -299,11 +300,30 @@ test("fresh managed profile serves the installed official shell and bounded ASAR
 
   const bootstrap = await request(service, "/api/bootstrap", { host: "claude.ai" });
   assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
+  assert.deepEqual(bootstrap.json.gated_imports, { "fixture-ui": { hash: "fixture-lazy", css: [], preload: [] } });
+});
+
+test("managed desktop feature endpoint retains evaluated reference values and user controls", async () => {
+  const file = path.join(root, "desktop-feature-profile.json");
+  fs.writeFileSync(file, JSON.stringify({ schema: 1, source: "official-desktop-features", desktopVersion: "fixture-version",
+    capturedAt: new Date().toISOString(), features: {
+      "123": { value: false, on: false, off: true, source: "defaultValue" },
+      "124": { value: { layout: "native" }, on: true, off: false, source: "experiment" },
+    } }));
+  const instance = await start({ CLAUDE_LOCAL_DESKTOP_FEATURES_FILE: file, CLAUDE_LOCAL_DESKTOP_VERSION: "fixture-version" });
+  try {
+    const response = await request(instance, "/api/desktop/features", { host: "claude.ai" });
+    assert.equal(response.json.features["123"].value, false);
+    assert.deepEqual(response.json.features["124"].value, { layout: "native" });
+    assert.equal(response.json.features["1291166712"].value.enabled, false);
+    const health = await request(instance, "/__codex_claude_local/health");
+    assert.equal(health.json.desktopFeaturesSource, "official-reference");
+    assert.equal(health.json.uiResources, "installed");
+  } finally { await stop(instance); }
 });
 
 test("installed template uses packaged resources even with a stale cached shell", async () => {
-  // 后端 install_assets 会写入内嵌模板（mock/.codex-plus-template）：模板数据配线上外壳写穿缓存。
-  // 受限地区直连 claude.ai 会被 302，首次抓外壳要经后端传入的出站代理（CONNECT 隧道）。
+  // API templates must never select the old HTML or its dependency graph.
   const connects = [];
   const upstreamProxy = http.createServer();
   upstreamProxy.on("connect", (req, socket) => {
