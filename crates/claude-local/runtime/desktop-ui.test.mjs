@@ -106,3 +106,26 @@ test("selector metadata remains data and malformed model catalogs are ignored", 
   assert.equal(bad.web.modelSelectorConfig, undefined);
   assert.equal(bad.source, "official-reference");
 });
+
+test("current app_start djb2 definitions retain rules, disabled defaults and more than 4096 flags", () => {
+  const features = Object.fromEntries(Array.from({ length: 4667 }, (_, i) => [String(i), { defaultValue: i % 2 === 0 }]));
+  features["11"] = { defaultValue: false, rules: [{ condition: { client: "desktop" }, force: true }] };
+  const web = { buildId: "current-web", gatedImports: {}, hashingAlgorithm: "djb2", features };
+  const profile = loadDesktopUiProfile(fixture({ web }), "5.11492.5", now);
+  assert.equal(profile.webFeatures.hashing_algorithm, "djb2");
+  assert.equal(Object.keys(profile.webFeatures.features).length, 4667);
+  assert.deepEqual(profile.webFeatures.features["11"], features["11"]);
+  assert.equal(profile.webFeatures.features["1"].defaultValue, false);
+  assert.deepEqual(profile.webFeatures.user, {});
+  for (const invalid of [{ "bad": { defaultValue: true } }, { "1": { value: true } }, { "1": { defaultValue: false, rules: [null] } }]) {
+    assert.equal(loadDesktopUiProfile(fixture({ web: { ...web, features: invalid } }), "5.11492.5", now).webFeatures, null);
+  }
+});
+
+test("local computer-use switches preserve the other same-version capability settings", () => {
+  const features = { ...evaluated, "1291166712": { value: { coordinateMode: "pixels", watchRecordEnabled: true, enabled: true }, on: true, off: false, source: "defaultValue" } };
+  const profile = loadDesktopUiProfile(fixture({ features }), "5.11492.5", now);
+  const result = desktopFeatures(profile, { computerUse: false, backgroundMode: false, forceBackgroundMode: false });
+  assert.deepEqual(result.features["1291166712"].value, { coordinateMode: "pixels", watchRecordEnabled: true, enabled: false, appScopedEnabled: false });
+  assert.equal(profile.features["1291166712"].value.enabled, true);
+});

@@ -15,3 +15,6 @@ jobs:
         with:
           node-version: 24
       - run: node --test scripts/lab-certificate-policy.test.cjs
+      - name: UI profile and matched resource contracts
+        working-directory: crates/claude-local/runtime
+        run: node --test desktop-ui.test.mjs ui-resources.test.mjs

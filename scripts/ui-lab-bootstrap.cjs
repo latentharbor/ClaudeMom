@@ -4,6 +4,8 @@ const fs = require("node:fs"), path = require("node:path"), http = require("node
 const electron = require("electron");
 const root = process.env.CLAUDE_MOM_LAB_ROOT;
 if (!root || path.basename(root) !== ".claude-mom-ui-lab") throw Error("Missing isolated UI lab root");
+const observerPath=path.join(root,"ui-observer.cjs");
+const observer=fs.existsSync(observerPath)?require(observerPath).install(electron,root):null;
 const { app, globalShortcut, shell, autoUpdater } = electron;
 const { createLabCertificatePolicy, certificateVerifyProc, withLabChildCA } = require("./lab-certificate-policy.cjs");
 const childProcess = require("node:child_process"), spawn = childProcess.spawn;
@@ -53,6 +55,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("content-type", "application/json");
   if (req.headers.authorization !== `Bearer ${token}`) { res.writeHead(403); return res.end("{}"); }
   try {
+    if(req.method==="POST"&&req.url==="/observe")return res.end(JSON.stringify(await observer.start()));
+    if(req.method==="GET"&&req.url==="/observe")return res.end(JSON.stringify(observer.report()));
     const entries = frames();
     if (req.method === "GET" && req.url === "/status") {
       return res.end(JSON.stringify({ pid: process.pid, data: app.getPath("userData"),

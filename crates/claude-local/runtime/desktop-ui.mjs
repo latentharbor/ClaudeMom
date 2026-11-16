@@ -5,14 +5,23 @@ const MAX_FEATURES = 2048;
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
-function evaluatedWebFeatures(web) {
-  if (!web || web.hashingAlgorithm !== "sha256" || !record(web.features)) return null;
+function referenceWebFeatures(web) {
+  if (!web || !["sha256", "djb2"].includes(web.hashingAlgorithm) || !record(web.features)) return null;
   const entries = Object.entries(web.features);
-  if (!entries.length || entries.length > 4096) return null;
-  if (entries.some(([key, feature]) => !/^[A-Za-z0-9+/]{43}=$/.test(key) || !record(feature) ||
-      !Object.hasOwn(feature, "value") || typeof feature.on !== "boolean" ||
-      typeof feature.off !== "boolean" || typeof feature.source !== "string")) return null;
-  return { features: web.features, hashing_algorithm: "sha256", user: {} };
+  if (!entries.length || entries.length > 8192) return null;
+  if (web.hashingAlgorithm === "sha256") {
+    if (entries.some(([key, feature]) => !/^[A-Za-z0-9+/]{43}=$/.test(key) || !record(feature) ||
+        !Object.hasOwn(feature, "value") || typeof feature.on !== "boolean" ||
+        typeof feature.off !== "boolean" || typeof feature.source !== "string")) return null;
+  } else {
+    // Current app_start bootstraps ship djb2 feature definitions, not evaluated
+    // SHA-256 results. Keep their rules and disabled defaults as delivered.
+    if (entries.some(([key, feature]) => !/^\d{1,10}$/.test(key) || Number(key) > 0xffffffff ||
+        !record(feature) || !Object.hasOwn(feature, "defaultValue") ||
+        feature.rules !== undefined && (!Array.isArray(feature.rules) || feature.rules.length > 256 ||
+          feature.rules.some(rule => !record(rule))))) return null;
+  }
+  return { features: structuredClone(web.features), hashing_algorithm: web.hashingAlgorithm, user: {} };
 }
 
 // This is an optional evaluated response captured by the owner from the
@@ -48,7 +57,7 @@ export function loadDesktopUiProfile(file, desktopVersion, now = Date.now()) {
     return {
       features: profile.features,
       web,
-      webFeatures: evaluatedWebFeatures(web),
+      webFeatures: referenceWebFeatures(web),
       source: "official-reference",
       warning: now - captured > WEEK
         ? "Desktop UI reference is older than seven days; refresh it to follow the official rollout."
@@ -66,7 +75,8 @@ export function desktopFeatures(reference, runtime) {
   const features = structuredClone(reference.features);
   // These two controls remain owned by the user's explicit local settings.
   features["1291166712"] = {
-    value: { enabled: runtime.computerUse, appScopedEnabled: runtime.computerUse && runtime.backgroundMode },
+    value: { ...(record(features["1291166712"]?.value) ? features["1291166712"].value : {}),
+      enabled: runtime.computerUse, appScopedEnabled: runtime.computerUse && runtime.backgroundMode },
     on: runtime.computerUse, off: !runtime.computerUse, source: "force",
     experiment: null, experimentResult: null,
   };
