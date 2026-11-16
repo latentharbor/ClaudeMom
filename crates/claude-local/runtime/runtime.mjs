@@ -106,6 +106,7 @@ export function runtimeConfig(env = process.env) {
     recordedDir,
     localization: flag("LOCALIZATION"),
     voiceInput: flag("VOICE_INPUT"),
+    allowAllBrowserSites: env.CLAUDE_LOCAL_ALLOW_ALL_BROWSER_SITES === "1",
     computerUse: flag("COMPUTER_USE"),
     backgroundMode: flag("BACKGROUND_MODE"),
     // 无视 Claude 对后台模式的 macOS 版本上限（见 proxy.mjs 的 /api/desktop/features）。

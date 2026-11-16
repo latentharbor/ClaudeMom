@@ -640,6 +640,13 @@ function ClaudeSettings({ status, busy, onConfigure, onAction, onVoice, update, 
         />
         {config.voiceInput && !status.dictationReady ? <VoiceModel onReady={() => onAction("prepare")} /> : null}
         <Toggle
+          checked={config.allowAllBrowserSites ?? false}
+          detail="Code 内置浏览器访问普通网站时不再逐站询问，不改变会话的权限模式。敏感站点、登录提交和操作确认仍由 Claude 处理；站点检查失败时仍需确认。改完重新启动 Claude 生效。"
+          disabled={disabled}
+          label="允许所有网站"
+          onChange={(next) => onConfigure({ allowAllBrowserSites: next })}
+        />
+        <Toggle
           checked={config.importCliSessions ?? true}
           detail="启动 Claude 前，把终端、BaoCode 等命令行里建的会话加进左侧列表（已在列表里的、删过的不会重复加）。"
           disabled={disabled}

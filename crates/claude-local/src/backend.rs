@@ -53,6 +53,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../runtime/site-policy.mjs"),
     ),
     (
+        "browser-site-consent.js",
+        include_bytes!("../runtime/browser-site-consent.js"),
+    ),
+    (
         "conversation-service.mjs",
         include_bytes!("../runtime/conversation-service.mjs"),
     ),
@@ -1736,6 +1740,7 @@ fn start_backend(
         .env("CLAUDE_LOCAL_INSTANCE_ID", &instance)
         .env("CLAUDE_LOCAL_LOCALIZATION", flag(config.localization))
         .env("CLAUDE_LOCAL_VOICE_INPUT", flag(config.voice_input))
+        .env("CLAUDE_LOCAL_ALLOW_ALL_BROWSER_SITES", flag(config.allow_all_browser_sites))
         .env("CLAUDE_LOCAL_COMPUTER_USE", flag(config.computer_use))
         .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode))
         .env("CLAUDE_LOCAL_FORCE_BACKGROUND_MODE", flag(config.force_background_mode))
@@ -3363,12 +3368,18 @@ RGvMS5OzZFvnFlekIHE6c+6QK9QtWD7P+PkIpRa1D01cb9SwsRHqGfs7o2UbaZxs\n\
         assert!(config.computer_use);
         let value = serde_json::to_value(config).unwrap();
         assert_eq!(value["voiceInput"], true);
+        assert_eq!(value["allowAllBrowserSites"], false);
         assert_eq!(value["backgroundMode"], true);
         assert_eq!(value["forceBackgroundMode"], false);
         assert_eq!(value["cowork"], true);
         // 旧版设置文件没有 cowork 字段：按默认开。
         let legacy: ClaudeLocalSettings = serde_json::from_value(json!({ "enabled": true })).unwrap();
         assert!(legacy.cowork);
+        assert!(!legacy.allow_all_browser_sites);
+        let opted_in: ClaudeLocalSettings =
+            serde_json::from_value(json!({ "allowAllBrowserSites": true })).unwrap();
+        assert!(opted_in.allow_all_browser_sites);
+        assert_eq!(opted_in.computer_use, legacy.computer_use);
         // 强制后台模式会连带打开后台模式和电脑控制。
         let forced = validate_config(ClaudeLocalSettings {
             force_background_mode: true,

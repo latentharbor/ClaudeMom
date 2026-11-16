@@ -177,7 +177,7 @@ before(async () => {
     "audio/tone.mp3": Buffer.from([0x49, 0x44, 0x33]),
   });
   fs.mkdirSync(path.join(root, "runtime", "scripts"), { recursive: true });
-  for (const file of ["proxy.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "desktop-ui.mjs", "ui-resources.mjs", "site-policy.mjs", "scripts/patch-dictation-start.mjs"]) {
+  for (const file of ["proxy.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "desktop-ui.mjs", "ui-resources.mjs", "site-policy.mjs", "browser-site-consent.js", "scripts/patch-dictation-start.mjs"]) {
     fs.copyFileSync(path.join(here, file), path.join(root, "runtime", file));
   }
   fs.copyFileSync(
@@ -301,6 +301,28 @@ test("fresh managed profile serves the installed official shell and bounded ASAR
   const bootstrap = await request(service, "/api/bootstrap", { host: "claude.ai" });
   assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
   assert.deepEqual(bootstrap.json.gated_imports, { "fixture-ui": { hash: "fixture-lazy", css: [], preload: [] } });
+});
+
+test("browser site consent is opt-in and ships without localization", async () => {
+  const pathname = "/__codex_plus/browser-site-consent.js";
+  const configPath = "/__codex_plus/browser-site-consent.json";
+  const baseline = await request(service, configPath, { host: "claude.ai" });
+  assert.deepEqual(baseline.json, { allowAllBrowserSites: false });
+  const optedIn = await start({ CLAUDE_LOCAL_ALLOW_ALL_BROWSER_SITES: "1", CLAUDE_LOCAL_LOCALIZATION: "0" });
+  try {
+    const shell = await request(optedIn, "/new", { host: "claude.ai" });
+    const html = shell.bytes.toString("utf8");
+    assert.equal(html.split(`src="${pathname}"`).length - 1, 1);
+    assert.ok(html.indexOf(`src="${pathname}"`) < html.indexOf("<script>"));
+    const script = await request(optedIn, pathname, { host: "claude.ai" });
+    assert.equal(script.status, 200);
+    assert.deepEqual(script.bytes, fs.readFileSync(path.join(root, "runtime", "browser-site-consent.js")));
+    assert.equal(script.headers["cache-control"], "no-store");
+    const enabled = await request(optedIn, configPath, { host: "claude.ai" });
+    assert.deepEqual(enabled.json, { allowAllBrowserSites: true });
+    assert.equal((await request(optedIn, configPath, { host: "claude.ai", method: "POST", body: {} })).status, 404);
+    assert.equal((await request(optedIn, pathname, { host: "claude.ai", method: "HEAD" })).status, 200);
+  } finally { await stop(optedIn); }
 });
 
 test("managed desktop feature endpoint retains evaluated reference values and user controls", async () => {

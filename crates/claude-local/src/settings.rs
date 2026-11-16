@@ -7,6 +7,8 @@ pub struct ClaudeLocalSettings {
     pub model: String,
     pub localization: bool,
     pub voice_input: bool,
+    /// Code 内置浏览器的普通站点访问免确认；敏感操作和站点分类检查保持原样。
+    pub allow_all_browser_sites: bool,
     pub computer_use: bool,
     pub background_mode: bool,
     /// 无视 Claude 对后台模式的 macOS 版本上限（新系统上 Claude 会提示「暂不支持」，默认关）。
@@ -46,6 +48,7 @@ impl Default for ClaudeLocalSettings {
             model: String::new(),
             localization: true,
             voice_input: true,
+            allow_all_browser_sites: false,
             computer_use: false,
             background_mode: false,
             force_background_mode: false,

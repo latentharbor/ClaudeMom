@@ -16,10 +16,21 @@ jobs:
           node-version: 22
       - name: Classification, privacy and failure handling
         working-directory: crates/claude-local/runtime
-        run: node --test --test-timeout=30000 site-policy.test.mjs
+        run: node --test --test-timeout=30000 site-policy.test.mjs browser-site-consent.test.mjs
       - name: Native HTTPS route and runtime packaging
         working-directory: crates/claude-local/runtime
         run: |
           bash scripts/gen-ca.sh
           node --test --test-timeout=30000 --test-name-pattern='site policy' proxy.test.mjs
-          node --test --test-timeout=30000 --test-name-pattern='managed readiness' managed.test.mjs
+          node --test --test-timeout=30000 --test-name-pattern='managed readiness|browser site consent|fresh managed profile' managed.test.mjs
+      - name: Frontend settings contract
+        working-directory: apps/claude-mom
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run vite:build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Settings persistence and runtime packaging
+        run: cargo test -p claude-local local_settings_serialize_independently_from_enhanced_copy

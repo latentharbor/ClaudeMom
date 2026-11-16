@@ -40,6 +40,10 @@ const managedResources = runtime.managed && !runtime.recordedDir;
 const desktopUi = loadDesktopUiProfile(process.env.CLAUDE_LOCAL_DESKTOP_FEATURES_FILE,
   process.env.CLAUDE_LOCAL_DESKTOP_VERSION);
 const LOCALIZATION_SHIM_PATH = "/__codex_plus/claude-localization.js";
+const BROWSER_SITE_SHIM_PATH = "/__codex_plus/browser-site-consent.js";
+const BROWSER_SITE_CONFIG_PATH = "/__codex_plus/browser-site-consent.json";
+const browserSiteShim = managedResources
+  ? fs.readFileSync(path.join(here, "browser-site-consent.js")) : null;
 const localizationShim = runtime.managed && !runtime.recordedDir && runtime.localization
   ? fs.readFileSync(path.join(here, "page-shim.js"))
   : null;
@@ -80,8 +84,19 @@ function addLocalizationShim(html, officialLocales) {
   return `${html.slice(0, contentStart)}${withoutMeta.slice(0, insertAt)}${additions}${withoutMeta.slice(insertAt)}${html.slice(headEnd.index)}`;
 }
 
+function addDesktopShims(html, locales) {
+  html = addLocalizationShim(html, locales);
+  if (!browserSiteShim || html.includes(`src="${BROWSER_SITE_SHIM_PATH}"`)) return html;
+  const head = /<head\b[^>]*>/i.exec(html);
+  const end = /<\/head\s*>/i.exec(html);
+  if (!head || !end || head.index >= end.index) throw new Error("Claude Desktop shell has no supported browser-consent injection point");
+  const firstScript = /<script\b/i.exec(html.slice(head.index + head[0].length, end.index));
+  const at = firstScript ? head.index + head[0].length + firstScript.index : end.index;
+  return `${html.slice(0, at)}<script src="${BROWSER_SITE_SHIM_PATH}"></script>${html.slice(at)}`;
+}
+
 const officialShell = runtime.managed
-  ? addLocalizationShim(officialAssets.indexHtml, officialAssets.i18nLocales)
+  ? addDesktopShims(officialAssets.indexHtml, officialAssets.i18nLocales)
   : null;
 const args = process.argv.slice(2);
 const arg = (name, fallback) => {
@@ -1578,6 +1593,18 @@ function handle(req, res, hostHeader) {
     return mockApi(req, res, url);
   }
   if (runtime.managed && isMainClaudeHost && url.pathname.startsWith("/__codex_plus/")) {
+    const browserRoute = MODE === "mock" && browserSiteShim && ["GET", "HEAD"].includes(req.method);
+    if (browserRoute && url.pathname === BROWSER_SITE_CONFIG_PATH) {
+      const body = Buffer.from(JSON.stringify({ allowAllBrowserSites: runtime.allowAllBrowserSites }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "content-length": body.length,
+        "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      return res.end(req.method === "HEAD" ? undefined : body);
+    }
+    if (browserRoute && url.pathname === BROWSER_SITE_SHIM_PATH) {
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "content-length": browserSiteShim.length,
+        "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      return res.end(req.method === "HEAD" ? undefined : browserSiteShim);
+    }
     if (
       url.pathname !== LOCALIZATION_SHIM_PATH ||
       !localizationShim ||
@@ -1687,10 +1714,10 @@ function handle(req, res, hostHeader) {
   ) {
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
-      "content-length": Buffer.byteLength(uiResources.kind === "installed" ? officialShell : addLocalizationShim(uiResources.html, officialAssets.i18nLocales)),
+      "content-length": Buffer.byteLength(uiResources.kind === "installed" ? officialShell : addDesktopShims(uiResources.html, officialAssets.i18nLocales)),
       "cache-control": "no-cache",
     });
-    return res.end(uiResources.kind === "installed" ? officialShell : addLocalizationShim(uiResources.html, officialAssets.i18nLocales));
+    return res.end(uiResources.kind === "installed" ? officialShell : addDesktopShims(uiResources.html, officialAssets.i18nLocales));
   }
 
   if (

@@ -38,6 +38,7 @@ export type ClaudeConfig = {
   model: string;
   localization: boolean;
   voiceInput: boolean;
+  allowAllBrowserSites?: boolean;
   computerUse: boolean;
   backgroundMode: boolean;
   /** 无视 Claude 对后台模式的 macOS 版本上限。 */
