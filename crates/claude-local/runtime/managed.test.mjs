@@ -469,7 +469,7 @@ test("clean managed runtime uses synthetic bootstrap and configured catalogs wit
     assert.equal(result.json.privateFixture, undefined);
     assert.equal(result.json.account.email_address, "local@claude.local");
     assert.equal(result.json.locale, "zh-Hans");
-    assert.deepEqual(result.json.gated_imports, {});
+    assert.deepEqual(result.json.gated_imports, { "fixture-ui": { hash: "fixture-lazy", css: [], preload: [] } });
     assert.deepEqual(result.json.current_user_access.features, []);
     assert.equal(result.json.activeOrganization.uuid, result.json.resolved_org_uuid);
     assert.equal(result.json.activeOrganization.uuid, result.json.account.organization_uuid);

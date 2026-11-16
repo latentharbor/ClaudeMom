@@ -2003,6 +2003,7 @@ fn launch_original(
         command.env("CLAUDE_MOM_LAB_ROOT", host().state_dir());
         command.env("TMPDIR", host().state_dir().join("tmp"));
         command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+        command.current_dir(host().state_dir().join("scratch"));
     }
     for name in [
         "ELECTRON_RUN_AS_NODE",

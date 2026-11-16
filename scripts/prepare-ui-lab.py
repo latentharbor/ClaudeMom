@@ -32,6 +32,7 @@ def main():
     raw = (source / 'Contents/Resources/app.asar').read_bytes()
     source_hash = hashlib.sha256(raw).hexdigest()
     root.mkdir(mode=0o700)
+    (root / 'tmp').mkdir(mode=0o700)
     subprocess.run(['ditto', str(source), str(app)], check=True)
     _, header_size, _, size = struct.unpack('<4I', raw[:16])
     header = json.loads(raw[16:16 + size])
