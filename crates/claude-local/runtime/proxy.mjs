@@ -25,7 +25,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
-import { createStateStore, dropUnroutedModels, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, dropUnroutedModels, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, nativeModelId, planProfile, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
 import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
 import { selectUiResources } from "./ui-resources.mjs";
@@ -363,7 +363,8 @@ function health() {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
     lastClientAt, ...(persistenceWarning || desktopUi.warning ? { warning: persistenceWarning || desktopUi.warning } : {}),
     ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source,
-      webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template" } : {}),
+      webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template",
+      modelSelectorsSource: uiResources?.kind === "web-cache" && Array.isArray(desktopUi.web?.modelSelectorConfig) ? "official-reference" : "template" } : {}),
   };
 }
 
@@ -670,6 +671,8 @@ function mergePoolModels(j) {
       const tpl = sel.models[0] ?? {};
       for (const entry of sel.models) {
         if (entry && runtime.models.includes(entry.id)) {
+          entry.disabled = false;
+          entry.disabled_reason = null;
           entry.hard_limit = modelWindow(runtime, entry.id);
           entry.context_window = modelWindow(runtime, entry.id);
           entry.runtime = { max_input_tokens: modelWindow(runtime, entry.id) };
@@ -677,8 +680,10 @@ function mergePoolModels(j) {
       }
       for (const id of ids) {
         if (!seen.has(id)) sel.models.push({
-          ...tpl,
+          ...(sel.models.find((model) => nativeModelId(model?.id) === nativeModelId(id)) ?? tpl),
           id,
+          disabled: false,
+          disabled_reason: null,
           name: friendlyName(id),
           short_name: friendlyName(id),
           description: friendlyDescription(id),
@@ -746,6 +751,9 @@ function resolvedBootstrap() {
   if (uiResources?.kind === "web-cache" && desktopUi.webFeatures) {
     result.org_growthbook = structuredClone(desktopUi.webFeatures);
   }
+  if (uiResources?.kind === "web-cache" && Array.isArray(desktopUi.web?.modelSelectorConfig)) {
+    result.model_selector_config = structuredClone(desktopUi.web.modelSelectorConfig);
+  }
   forceCowork(result, template);
   mergePoolModels(result);
   if (managedResources) {
@@ -789,7 +797,7 @@ function mockApi(req, res, url) {
   // Code 的上下文来自 CLI model_selector，不读取网页的 hard_limit。
   const selector = p.match(/^\/api\/(?:organizations\/[^/]+\/)?model_selector\/([^/]+)$/);
   if (method === "GET" && selector) {
-    const catalog = modelSelectors(runtime);
+    const catalog = resolvedBootstrap();
     const config = catalog.model_selector_config.find((entry) => entry.id === selector[1]);
     const state = catalog.model_selector_state.find((entry) => entry.id === selector[1]);
     return json(res, {

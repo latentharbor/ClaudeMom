@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -55,6 +56,7 @@ child.stdout.on("data", (data) => { managerOutput += data.toString(); });
 child.stderr.on("data", (data) => { managerOutput += data.toString(); });
 let control;
 const result = { productionStateUsed: false, officialVersion: JSON.parse(fs.readFileSync(reference)).desktopVersion,
+  referenceSHA256: crypto.createHash("sha256").update(fs.readFileSync(reference)).digest("hex"),
   checks: {}, requests, errors: [] };
 async function rpc(route, data) {
   const response = await fetch(`http://127.0.0.1:${control.port}${route}`, {
@@ -102,6 +104,7 @@ try {
   result.resourceBuildId = health.uiBuildId;
   assert.equal(health.desktopFeaturesSource, "official-reference");
   assert.equal(health.webFeaturesSource, "official-reference");
+  assert.equal(health.modelSelectorsSource, "official-reference");
   result.checks.currentEvaluatedWebFeatures = true;
   result.checks.installedResourceProvenance = true;
   result.checks.sameVersionOfficialFeatures = true;
@@ -132,6 +135,13 @@ try {
   fs.writeFileSync(path.join(output, "ui-text.json"), JSON.stringify(text, null, 2));
   result.checks.fixtureVisible = text.some((frame) => frame.body?.includes("UI Lab fixture"));
   assert.equal(result.checks.fixtureVisible, true, "The isolated Desktop session fixture must be visible");
+  const codeFrame = (await frames()).find((frame) => frame.url.startsWith("https://claude.ai/epitaxy"));
+  const efforts = await evaluate(codeFrame, `(async () => {
+    const d=await (await fetch('/api/model_selector/code')).json();
+    return d.model_selector_config[0].models.find(m=>m.id==='fixture/claude-sonnet-5-5').thinking.effort_options.map(e=>e.id);
+  })()`);
+  assert.deepEqual(efforts, ["low", "medium", "high", "xhigh", "max"]);
+  result.checks.officialCodeEffortCapabilities = efforts;
   // Choose a model through the native control, rather than relying on the
   // account rollout's default model during session adoption.
   await until(async () => {

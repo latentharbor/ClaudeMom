@@ -37,7 +37,14 @@ export function loadDesktopUiProfile(file, desktopVersion, now = Date.now()) {
     }
     const web = record(profile.web) && typeof profile.web.buildId === "string" &&
       /^[a-zA-Z0-9_-]{1,128}$/.test(profile.web.buildId) && record(profile.web.gatedImports)
-      ? profile.web : null;
+      ? { ...profile.web } : null;
+    if (web?.modelSelectorConfig !== undefined && (!Array.isArray(web.modelSelectorConfig) ||
+        web.modelSelectorConfig.length > 64 || web.modelSelectorConfig.some((selector) => !record(selector) ||
+          typeof selector.id !== "string" || !Array.isArray(selector.models) || selector.models.length > 4096 ||
+          selector.models.some((model) => !record(model) || typeof model.id !== "string" ||
+            model.thinking !== undefined && model.thinking !== null && !record(model.thinking))))) {
+      delete web.modelSelectorConfig;
+    }
     return {
       features: profile.features,
       web,

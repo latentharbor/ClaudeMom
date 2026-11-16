@@ -39,6 +39,14 @@ the old recorded rule definitions only for that matched web document; account
 attributes are not imported. Disabled results remain disabled, and the local
 Cowork choice still takes precedence. Unknown or broken caches fall back to the package.
 
+Model selector metadata can be captured from the version-compatible public
+model catalog independently of the web resource build. Provider-qualified
+models retain the matching native model's capability declaration, and the
+selector API uses that same catalog instead of reducing every model to a
+synthetic Medium-only choice. A configured inference route owns its local
+availability; a reference account's disabled state is not imported as a quota
+or subscription decision for that route.
+
 The lab build has a different application identifier, port and state directory
 (`~/.claude-mom-ui-lab`). It cannot launch the production Desktop, import live
 sessions or change certificate trust. The owned Desktop copy has separate

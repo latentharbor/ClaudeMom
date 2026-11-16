@@ -95,3 +95,14 @@ test("current web flags keep evaluated SHA-256 values without account attributes
   const legacy = loadDesktopUiProfile(fixture({ web: { ...web, features: { [key]: { defaultValue: true } } } }), "5.11492.5", now);
   assert.equal(legacy.webFeatures, null);
 });
+
+test("selector metadata remains data and malformed model catalogs are ignored", () => {
+  const web = { buildId: "web", gatedImports: {}, modelSelectorConfig: [{ id: "code", models: [
+    { id: "claude-sonnet-5-5", thinking: { type: "effort", effort_options: [{ id: "low" }, { id: "max" }] } },
+  ] }] };
+  const result = loadDesktopUiProfile(fixture({ web }), "5.11492.5", now);
+  assert.equal(result.web.modelSelectorConfig[0].models[0].thinking.effort_options[1].id, "max");
+  const bad = loadDesktopUiProfile(fixture({ web: { ...web, modelSelectorConfig: [null] } }), "5.11492.5", now);
+  assert.equal(bad.web.modelSelectorConfig, undefined);
+  assert.equal(bad.source, "official-reference");
+});

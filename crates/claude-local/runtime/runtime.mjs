@@ -144,13 +144,17 @@ export function gatewayTarget(config, requestPath) {
   return target;
 }
 
+export function nativeModelId(id) {
+  return String(id || "").split("/").at(-1)
+    .replace(/^magpie-\d+\.anthropic\./, "").replace(/\[1m\]$/i, "").toLowerCase();
+}
+
 export function gatewayModel(config, requested) {
   if (config.models.includes(requested)) return requested;
   // Desktop's embedded CLI can return the native name after resuming a
   // session, while a gateway advertises provider/native-name. Preserve that
   // choice instead of silently substituting the globally selected model.
-  const native = (id) => String(id || "").split("/").at(-1)
-    .replace(/^magpie-\d+\.anthropic\./, "").replace(/\[1m\]$/i, "").toLowerCase();
+  const native = nativeModelId;
   if (requested) {
     let matches = config.models.filter((id) => native(id) === native(requested));
     const sameWindow = matches.filter((id) => /\[1m\]$/i.test(id) === /\[1m\]$/i.test(requested));
