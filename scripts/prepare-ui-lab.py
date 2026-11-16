@@ -56,6 +56,7 @@ def main():
     put('package.json', json.dumps(package, separators=(',', ':')).encode())
     put('ui-lab-original-main.cjs', ('module.exports=require(' + json.dumps('./' + original_main) + ');\n').encode())
     put('ui-lab-bootstrap.cjs', Path(__file__).with_name('ui-lab-bootstrap.cjs').read_bytes())
+    put('lab-certificate-policy.cjs', Path(__file__).with_name('lab-certificate-policy.cjs').read_bytes())
     encoded = json.dumps(header, separators=(',', ':'), ensure_ascii=False).encode()
     payload = struct.pack('<I', len(encoded)) + encoded
     payload += b'\0' * (-len(payload) % 4)

@@ -5,6 +5,14 @@ const electron = require("electron");
 const root = process.env.CLAUDE_MOM_LAB_ROOT;
 if (!root || path.basename(root) !== ".claude-mom-ui-lab") throw Error("Missing isolated UI lab root");
 const { app, globalShortcut, shell, autoUpdater } = electron;
+const { createLabCertificatePolicy, certificateVerifyProc } = require("./lab-certificate-policy.cjs");
+const matchesProxyCertificate = createLabCertificatePolicy(
+  fs.readFileSync(path.join(root, "claude-local/ca/ca.pem")),
+  fs.readFileSync(path.join(root, "claude-local/ca/server.crt")),
+);
+const installCertificatePolicy = (session) => session.setCertificateVerifyProc(certificateVerifyProc(matchesProxyCertificate));
+app.on("session-created", (...args) => installCertificatePolicy(args.at(-1)));
+app.whenReady().then(() => installCertificatePolicy(electron.session.defaultSession));
 const home = path.join(root, "profile-home");
 const owned = { userData: path.join(home, "Library/Application Support/Claude"),
   sessionData: path.join(root, "browser-session"), appData: path.join(home, "Library/Application Support"),
