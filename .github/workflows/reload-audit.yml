@@ -43,7 +43,11 @@ jobs:
           (cd fixture && shasum -a 256 -c SHA256SUMS)
           ditto -x -k fixture/Claude-5.11492.5.zip fixture
           ditto -x -k fixture/cli-cache-2.1.325.zip fixture
-          ditto -x -k fixture/web-cache.zip fixture
+          mkdir -p fixture/overlay
+          gh release download reload-fixtures-5.11492.5-20261117 -R "$GITHUB_REPOSITORY" --dir fixture/overlay
+          (cd fixture/overlay && shasum -a 256 -c SHA256SUMS)
+          cp fixture/overlay/desktop-features.json fixture/desktop-features.json
+          ditto -x -k fixture/overlay/web-cache.zip fixture
           codesign --verify --deep --strict fixture/Claude.app
           cd crates/claude-local/runtime
           bash scripts/gen-ca.sh
