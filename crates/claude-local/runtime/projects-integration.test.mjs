@@ -17,11 +17,17 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     if(!req.url.startsWith('/v1/messages'))return void backend.handle(req,res,new URL(req.url,'http://localhost')).catch(e=>{res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:e.message}}));});
     let raw='';for await(const part of req)raw+=part;const body=JSON.parse(raw);requests.push(body);
     const words=body.messages.map(m=>typeof m.content==='string'?m.content:m.content.map(c=>c.type==='text'?c.text:JSON.stringify(c)).join('\n')).join('\n');
+    const latestUser=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:m.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')).filter(Boolean).at(-1)||'';
     const marker=words.includes('DENY_TOOL')?'DENY_TOOL':words.includes('CANCEL_TOOL')?'CANCEL_TOOL':'ALLOW_TOOL';
     const results=body.messages.flatMap(m=>Array.isArray(m.content)?m.content.filter(c=>c.type==='tool_result'):[]);
     if(JSON.stringify(results).includes('OWNED_LIBRARY_REFERENCE'))readMarkers.add(marker);
     let content;
-    if(results.length===0) {
+    if(latestUser.includes('Local worker event:'))content=[{type:'text',text:'COORDINATOR_SUMMARY'}];
+    else if(latestUser.includes('COORDINATOR_WORKER_'))content=[{type:'text',text:'COORDINATOR_CHILD_DONE'}];
+    else if(latestUser.includes('COORDINATE_TWO'))content=results.length?[{type:'text',text:'COORDINATOR_STARTED'}]:[
+      {type:'tool_use',id:'toolu_start_a',name:'mcp__local_project__start_thread_session',input:{title:'Auto A',prompt:'COORDINATOR_WORKER_A'}},
+      {type:'tool_use',id:'toolu_start_b',name:'mcp__local_project__start_thread_session',input:{title:'Auto B',prompt:'COORDINATOR_WORKER_B'}}];
+    else if(results.length===0) {
       const library=/Project Library snapshot: ([^\n\\]+)/.exec(words)?.[1];
       content=[{type:'tool_use',id:'toolu_read_'+marker,name:'Read',input:{file_path:path.join(library||directory,'notes.txt')}}];
     }else if(results.length===1)content=[{type:'tool_use',id:'toolu_bash_'+marker,name:'Bash',input:{command:`printf '${marker}' > ${marker}.txt`,description:'Write an owned local Projects fixture'}}];
@@ -65,6 +71,14 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     await request(base+'/threads/'+cancel.id+'/cancel','POST',{});
     await until(()=>backend.snapshot().jobs.find(j=>j.thread_root_id===cancel.id).state==='cancelled');
     assert.equal(fs.existsSync(path.join(workspace(cancel.id),'CANCEL_TOOL.txt')),false);
+    const auto=(await request('/v1/code/channels','POST',{name:'Coordinator fixture'})).channel;
+    await request('/v1/code/channels/'+auto.id+'/messages','POST',{body:'COORDINATE_TWO',client_message_id:'cmsg_coordinator_fixture'});
+    await until(()=>backend.snapshot().threads.filter(t=>t.channel_id===auto.id).length===2);
+    await until(()=>backend.snapshot().messages.some(m=>m.channel_id===auto.id&&m.author_session_id&&m.body.includes('COORDINATOR_SUMMARY')));
+    await until(()=>backend.snapshot().jobs.filter(j=>j.channel_id===auto.id).every(j=>j.state==='completed'));
+    assert.equal(backend.snapshot().threads.filter(t=>t.channel_id===auto.id&&t.state==='completed').length,2);
+    assert.ok(backend.snapshot().jobs.some(j=>j.source==='worker_event'));
+    assert.equal(backend.snapshot().permissions.filter(p=>p.channel_id===auto.id).length,0,'project dispatch uses owned MCP tools, with no bypass of worker permissions');
   }finally{
     if(process.env.PROJECTS_TEST_EVIDENCE){fs.mkdirSync(process.env.PROJECTS_TEST_EVIDENCE,{recursive:true});
       fs.writeFileSync(path.join(process.env.PROJECTS_TEST_EVIDENCE,'integration.json'),JSON.stringify({jobs:backend.snapshot().jobs.map(({tool_token,directory,...j})=>j),requestCount:requests.length,readMarkers:[...readMarkers]},null,2));
@@ -72,7 +86,7 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
         const source=path.join(job.directory,name);if(fs.existsSync(source))fs.copyFileSync(source,path.join(process.env.PROJECTS_TEST_EVIDENCE,job.id+'-'+name));
       }
     }
-    for(const t of backend.snapshot().threads)if(['queued','running'].includes(t.state)&&base)try{await request(base+'/threads/'+t.id+'/cancel','POST',{});}catch{}
+    for(const channel of backend.snapshot().channels)try{await request('/v1/code/channels/'+channel.id+'/cancel','POST',{});}catch{}
     await delay(500);backend.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fs.rmSync(directory,{recursive:true,force:true});
   }
 });

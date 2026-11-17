@@ -37,6 +37,15 @@ test('local project state survives a service restart without access to official 
     assert.equal((await request(`/v1/code/channels/${id}`)).body.channel.system_prompt_addendum,'Owned fixture only');
     assert.equal((await request(files+'/files:list','POST',{path:'/',recursive:true})).body.entries[0].path,'reference/notes.md');
     assert.equal((await request(memoryBase+'/'+memory.body.id)).body.content,'New decision');
+    await request(files+'/files:mkdir','POST',{path:'empty-folder'});
+    assert.ok((await request(files+'/files:list','POST',{path:'/',recursive:true})).body.entries.some(e=>e.path==='empty-folder'&&e.is_directory));
+    const binary=Buffer.alloc(2*1024*1024,0xa5);
+    assert.equal((await request(files+'/files:write','POST',{files:[{path:'binary.bin',content:binary.toString('base64')}]})).status,200);
+    assert.equal((await request(files+'/files:move','POST',{source_path:'reference',destination_path:'renamed'})).status,200);
+    const opened=await request(files+'/files:open','POST',{path:'binary.bin'});
+    assert.deepEqual(Buffer.from(opened.body.content,'base64'),binary);
+    assert.equal((await request(files+'/files:delete','POST',{path:'renamed'})).status,409);
+    assert.equal((await request(files+'/files:delete','POST',{path:'renamed',recursive:true})).status,200);
     assert.equal((await request(`/v1/code/channels/${id}/messages`,'POST',{body:'Do not pretend a worker exists'})).status,503);
     assert.equal((await request('/v1/code/channels','POST',{name:'Cross-origin'}, {origin:'https://attacker.example'})).status,403);
     assert.equal((await request('/v1/code/channels','POST',{name:'No token'},{authorization:'Bearer wrong'})).status,403);

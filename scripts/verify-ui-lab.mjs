@@ -36,14 +36,16 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url.startsWith("/v1/messages")) {
     const body = JSON.parse(raw);
     requests.push({ model: body.model, thinking: body.thinking, effort: body.output_config?.effort, endpointPort: req.socket.localPort });
+    const permissionTool=projectsProbe&&raw.includes('UI_PROJECT_TOOL')&&!body.messages.some(m=>Array.isArray(m.content)&&m.content.some(c=>c.type==='tool_result'));
+    const block=permissionTool?{type:'tool_use',id:'toolu_ui_project',name:'Bash',input:{command:"printf 'UI_PROJECT_APPROVED' > ui-project-approved.txt",description:'Write an owned UI lab fixture'}}:{type:'text',text:'UI_LAB_ROUTING_OK'};
     const message = { id: "msg_ui_lab", type: "message", role: "assistant", model: body.model,
       content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } };
     const events = [
       { type: "message_start", message },
-      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "UI_LAB_ROUTING_OK" } },
+      { type: "content_block_start", index: 0, content_block: permissionTool?{...block,input:{}}:{type:'text',text:''} },
+      { type: "content_block_delta", index: 0, delta: permissionTool?{type:'input_json_delta',partial_json:JSON.stringify(block.input)}:{type:'text_delta',text:block.text} },
       { type: "content_block_stop", index: 0 },
-      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } },
+      { type: "message_delta", delta: { stop_reason: permissionTool?'tool_use':'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } },
       { type: "message_stop" },
     ];
     res.writeHead(200, { "content-type": "text/event-stream" });

@@ -64,5 +64,60 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   result.checks.localProjectReplySurvivesFrontendReload=true;
   result.projects.replyId=reply.id;
   result.projects.reloaded=(await inspect()).state;
+  const savedState=()=>JSON.parse(fs.readFileSync(file));
+  async function local(expression) {
+    const frame=await frontend();if(!frame)return null;
+    return evaluate(frame,`(()=>{const root=document.querySelector('#claudemom-local-projects')?.shadowRoot;if(!root)return null;return (${expression});})()`);
+  }
+  async function clickLocal(label,sectionText) {
+    return until(()=>local(`(()=>{const scope=${sectionText?`[...root.querySelectorAll('section')].find(e=>e.textContent.includes(${JSON.stringify(sectionText)}))`:'root'};
+      const button=[...(scope?.querySelectorAll('button')||[])].find(e=>e.textContent===${JSON.stringify(label)}&&!e.disabled);if(!button)return false;button.click();return true;})()`));
+  }
+  async function submitLocal(formName,values) {
+    assert.equal(await local(`(()=>{const form=root.querySelector('[data-form=${formName}]');if(!form)return false;
+      for(const [name,value]of Object.entries(${JSON.stringify(values)})){const e=form.elements.namedItem(name);if(!e)return false;e.value=value;e.dispatchEvent(new Event('input',{bubbles:true}));}
+      form.requestSubmit();return true;})()`),true);
+  }
+  await until(()=>local("!!root.querySelector('[data-toggle]')"));
+  await local("(()=>{root.querySelector('[data-toggle]').click();return true;})()");
+  await clickLocal('Library');
+  await submitLocal('file',{path:'ui-library.md',content:'UI_LIBRARY_REFERENCE'});
+  await until(()=>savedState().files.some(f=>f.path==='ui-library.md'));
+  await clickLocal('重命名','ui-library.md');
+  await submitLocal('rename',{path:'reference/renamed.md'});
+  await until(()=>savedState().files.some(f=>f.path==='reference/renamed.md'));
+  result.checks.libraryUiCreateAndRename=true;
+  await clickLocal('线程');
+  await submitLocal('thread',{title:'UI_APPROVAL_THREAD',prompt:'UI_PROJECT_TOOL'});
+  const thread=await until(()=>savedState().threads.find(t=>t.title==='UI_APPROVAL_THREAD'));
+  const pending=await until(()=>savedState().permissions.find(p=>p.thread_id===thread.id&&p.state==='pending'),60000);
+  assert.equal(savedState().messages.find(m=>m.id===thread.id).thread_status,'needs_input');
+  await clickLocal('权限确认');
+  await until(()=>local("root.querySelector('[data-content]').textContent.includes('ui-project-approved.txt')"));
+  const approvalFrame=await frontend();await rpc('/screenshot',{id:approvalFrame.id,name:'projects-permission.png'});
+  fs.copyFileSync(path.join(root,'projects-permission.png'),path.join(output,'projects-permission.png'));
+  await clickLocal('仅允许这次');
+  await until(()=>savedState().jobs.some(j=>j.thread_root_id===thread.id&&j.state==='completed'),60000);
+  const job=savedState().jobs.find(j=>j.thread_root_id===thread.id);
+  const workerRoot=path.dirname(path.dirname(job.directory));
+  assert.equal(fs.readFileSync(path.join(workerRoot,'workspaces',thread.id,'ui-project-approved.txt'),'utf8'),'UI_PROJECT_APPROVED');
+  assert.equal(savedState().permissions.find(p=>p.id===pending.id).state,'allowed');
+  result.checks.nativeUiPermissionApprovedRealTool=true;
+  await clickLocal('计划任务');
+  await submitLocal('schedule',{name:'UI_ONCE_PLAN',prompt:'UI_PROJECT_SCHEDULE',kind:'once',run_once_at:new Date(Date.now()+3000).toISOString(),timezone:'Australia/Perth'});
+  const schedule=await until(()=>savedState().schedules.find(s=>s.name==='UI_ONCE_PLAN'));
+  await until(()=>savedState().jobs.some(j=>j.source==='schedule'&&j.thread_root_id===savedState().schedules.find(s=>s.id===schedule.id).last_thread_id&&j.state==='completed'),60000);
+  assert.equal(savedState().schedules.find(s=>s.id===schedule.id).enabled,false);
+  result.checks.nativeUiOneTimeScheduleExecuted=true;
+  await submitLocal('schedule',{name:'UI_CRON_PLAN',prompt:'Future daily task',kind:'cron',cron_expression:'0 9 * * *',timezone:'Australia/Perth'});
+  const cron=await until(()=>savedState().schedules.find(s=>s.name==='UI_CRON_PLAN'));
+  await clickLocal('暂停','UI_CRON_PLAN');await until(()=>savedState().schedules.find(s=>s.id===cron.id).enabled===false);
+  await clickLocal('启用','UI_CRON_PLAN');await until(()=>savedState().schedules.find(s=>s.id===cron.id).enabled===true);
+  await clickLocal('删除','UI_CRON_PLAN');await until(()=>!savedState().schedules.some(s=>s.id===cron.id));
+  result.checks.nativeUiSchedulePauseResumeDelete=true;
+  await clickLocal('Library');await clickLocal('删除','reference/renamed.md');await until(()=>savedState().files.length===0);
+  result.checks.nativeUiLibraryDelete=true;
+  await clickLocal('线程');
+  result.projects.localPanel=await local("root.querySelector('[data-panel]').innerText");
   fs.writeFileSync(path.join(output,'projects-observations.json'),JSON.stringify(seen,null,2));
 }
