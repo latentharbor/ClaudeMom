@@ -40,6 +40,7 @@ test('parallel lanes, durable approval, deny and queued follow-up survive a core
   const jobs=f.backend.snapshot().jobs;assert.equal(jobs.filter(j=>j.state==='running').length,2);
   assert.notEqual(jobs[0].session_id,jobs[1].session_id);
   assert.notEqual([...f.hosts.values()][0].options.lane,[...f.hosts.values()][1].options.lane);
+  assert.equal([...f.hosts.values()][1].options.prompt.includes('One task'),false,'a new worker does not inherit another worker\'s task history');
   await f.request(base+'/messages','POST',{body:'Queued continuation',in_reply_to_message_id:first.id});
   assert.equal(f.backend.snapshot().jobs.filter(j=>j.state==='queued').length,1);
   const job=jobs.find(j=>j.thread_root_id===first.id),tool=`/__codex_plus/projects-lab/jobs/${job.id}/tools`;

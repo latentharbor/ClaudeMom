@@ -36,7 +36,10 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url.startsWith("/v1/messages")) {
     const body = JSON.parse(raw);
     requests.push({ model: body.model, thinking: body.thinking, effort: body.output_config?.effort, endpointPort: req.socket.localPort });
-    const permissionTool=projectsProbe&&raw.includes('UI_PROJECT_TOOL')&&!body.messages.some(m=>Array.isArray(m.content)&&m.content.some(c=>c.type==='tool_result'));
+    const lastUser=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:
+      m.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')).filter(Boolean).at(-1)||'';
+    const currentRequest=lastUser.split('Current request:\n').at(-1).split('\n\nProject Library snapshot:')[0].trim();
+    const permissionTool=projectsProbe&&currentRequest==='UI_PROJECT_TOOL'&&!body.messages.some(m=>Array.isArray(m.content)&&m.content.some(c=>c.type==='tool_result'));
     const block=permissionTool?{type:'tool_use',id:'toolu_ui_project',name:'Bash',input:{command:"printf 'UI_PROJECT_APPROVED' > ui-project-approved.txt",description:'Write an owned UI lab fixture'}}:{type:'text',text:'UI_LAB_ROUTING_OK'};
     const message = { id: "msg_ui_lab", type: "message", role: "assistant", model: body.model,
       content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } };

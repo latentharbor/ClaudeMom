@@ -149,7 +149,7 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
     onTaskFinished(job.session_id);
     if(thread&&!job.notified&&!job.cancel_requested&&find(job.channel_id)?.settings?.coordinator_mode_enabled!==false) {
       job.notified=true;
-      const note=message(job.channel_id,{body:`Local worker event: ${thread.title} (${result.state}).\n${result.result||''}`,
+      const note=message(job.channel_id,{body:`Local worker event: ${thread.title} (${result.state}).\nResult preview (fetch thread messages for the complete result):\n${(result.result||'').slice(0,16000)}`,
         server_notice:true,author_agent_id:'claudemom-local',source_job_id:job.id});
       enqueue(find(job.channel_id),note,null,'worker_event');
     }
@@ -162,7 +162,9 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
       const channel=find(job.channel_id),input=data.messages.find(m=>m.id===job.input_id);
       if(!channel||!input){job.state='failed';save();continue;}
       const previous=data.jobs.findLast(j=>j.id!==job.id&&j.session_id===job.session_id&&j.state==='completed');
-      const history=data.messages.filter(m=>m.channel_id===channel.id&&m.id!==input.id&&m.created_at<=input.created_at).slice(-20)
+      const history=data.messages.filter(m=>m.channel_id===channel.id&&m.id!==input.id&&
+        (input.seq!==undefined?m.seq<input.seq:m.created_at<input.created_at)&&
+        (job.thread_root_id?m.thread_root_id===job.thread_root_id:m.in_timeline===true)).slice(-20)
         .map(m=>`${m.author_account_id?'User':'Assistant'}: ${m.body}`).join('\n').slice(-20000);
       const memory=data.memories.filter(m=>m.channel_id===channel.id).map(m=>`${m.path}:\n${m.content}`).join('\n').slice(0,12000);
       const library=data.files.filter(f=>f.channel_id===channel.id);
