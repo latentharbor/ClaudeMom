@@ -3008,7 +3008,7 @@ if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') {
       catch { process.send?.({ type: 'configurationRejected' }); }
     }
     if (message?.type === 'prepareUpdate') {
-      const idle = activeInference === 0 && activeDictationWsConnections === 0 &&
+      const idle = activeInference === 0 && localProjectTasks === 0 && activeDictationWsConnections === 0 &&
         Date.now() - taskObservedAt < 5000 && frontendTasks.idle &&
         !frontendTasks.active.length && !frontendTasks.draft && frontendTasks.toolsReady;
       quiescing = idle;
