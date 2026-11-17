@@ -136,6 +136,7 @@ try {
     return fs.existsSync(file) && JSON.parse(fs.readFileSync(file));
   });
   const health = await (await fetch(`http://127.0.0.1:${ready.port}/__codex_claude_local/health`)).json();
+  fs.writeFileSync(path.join(output, 'service-health-start.json'), JSON.stringify(health, null, 2));
   assert.ok(["installed", "web-cache"].includes(health.uiResources));
   result.resourceSource = health.uiResources;
   result.resourceBuildId = health.uiBuildId;
@@ -357,6 +358,38 @@ try {
       scope: 'renderer-owned REST completion, not a Cowork VM execution' };
     result.checks.reloadProbeExecuted = true;
     finishHeld();
+    if (serviceProbe) {
+      const health = () => fetch(`http://127.0.0.1:${ready.port}/__codex_claude_local/health`).then(r => r.json());
+      const before = await health();
+      const file = path.join(root, 'claude-local/service-config.json');
+      const descriptor = JSON.parse(fs.readFileSync(file));
+      descriptor.revision = crypto.createHash('sha256').update('owned-core-config').digest('hex');
+      descriptor.coreRevision = crypto.createHash('sha256').update('owned-core-env').digest('hex');
+      descriptor.env.CLAUDE_LOCAL_UI_REVISION = descriptor.coreRevision;
+      descriptor.env.CLAUDE_LOCAL_ALLOW_LOCAL_EXTENSIONS = '0';
+      fs.writeFileSync(file + '.next', JSON.stringify(descriptor), { mode: 0o600 });
+      fs.renameSync(file + '.next', file);
+      await until(async () => (await health()).pendingCoreRevision === descriptor.coreRevision);
+      await delay(1500);
+      assert.equal((await health()).workerPid, before.workerPid, 'an unsent draft prevents automatic UI/core replacement');
+      const cleared = (await evaluateFrontend(`(() => {
+        const e=[...document.querySelectorAll('textarea,[contenteditable="true"]')].find(e=>e.getBoundingClientRect().width>20);
+        if(!e)return false;e.focus();
+        if(e.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'');e.dispatchEvent(new Event('input',{bubbles:true}));}
+        else{const range=document.createRange();range.selectNodeContents(e);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);document.execCommand('delete');}
+        return true;
+      })()`)).value;
+      assert.equal(cleared, true);
+      await until(async () => { const h=await health(); return h.workerPid!==before.workerPid && h.configHash===descriptor.revision; });
+      await until(async () => (await health()).uiAppliedRevision === descriptor.coreRevision);
+      const browser = (await evaluateFrontend(`window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`)).value;
+      assert.deepEqual(ids(browser), ids(beforeTabs));
+      const applied = (await evaluateFrontend("({ui:sessionStorage.getItem('claudeMom.lastUiRefresh'),sdk:sessionStorage.getItem('claudeMom.lastNativeRefresh')})")).value;
+      assert.equal(applied.ui, descriptor.coreRevision);
+      assert.ok(['restarted','applies_on_next_start'].includes(applied.sdk));
+      Object.assign(result.service, { draftDeferredCoreUpdate: true, idleCoreReplacement: true,
+        nativeSdkRefreshed: true, uiGenerationAcknowledged: true, browserTabsPreservedAfterAutomaticUpdate: true });
+    }
   } else await until(async () => {
     for (const frame of await frames()) {
       try { if(await evaluate(frame, "document.body?.innerText?.includes('UI_LAB_ROUTING_OK')")) return true; } catch {}
@@ -384,7 +417,7 @@ try {
       for (const frame of current) {
         try {
           result.frameDiagnostics.push({ url: frame.url, ui: await evaluate(frame,
-            "({text:document.body?.innerText?.slice(0,12000), controls:[...document.querySelectorAll('button,a,[role=tab]')].slice(0,80).map(e=>({text:e.textContent?.trim().slice(0,100),label:e.getAttribute('aria-label'),title:e.getAttribute('title')}))})") });
+            "({runtimeBridge:window.__claudeMomRuntimeBridgeStatus,runtimeBridgeError:window.__claudeMomRuntimeBridgeError,text:document.body?.innerText?.slice(0,12000), controls:[...document.querySelectorAll('button,a,[role=tab]')].slice(0,80).map(e=>({text:e.textContent?.trim().slice(0,100),label:e.getAttribute('aria-label'),title:e.getAttribute('title')}))})") });
           await rpc("/screenshot", { id: frame.id, name: `final-${frame.contentsId}.png` });
           fs.copyFileSync(path.join(root, `final-${frame.contentsId}.png`), path.join(output, `final-${frame.contentsId}.png`));
         } catch {}

@@ -353,6 +353,28 @@ test("browser site consent is opt-in and ships without localization", async () =
   } finally { await stop(optedIn); }
 });
 
+test('versioned core retains the shared newer web document instead of falling back to packaged UI', async () => {
+  const dir = path.join(root, 'versioned-cache-core');
+  fs.cpSync(path.join(root, 'runtime'), dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'mock/.codex-plus-template'), '');
+  const cache = path.join(root, 'owner-web-cache'); fs.mkdirSync(cache);
+  const key = crypto.createHash('sha1').update('claude.ai/epitaxy').digest('hex');
+  fs.writeFileSync(path.join(cache, key), '<html data-build-id="current-web" data-build-timestamp="300"><head></head><body>' + 'x'.repeat(5000) + '</body></html>');
+  fs.writeFileSync(path.join(cache, key + '.json'), JSON.stringify({ status: 200, url: 'claude.ai/epitaxy' }));
+  const profile = path.join(root, 'shared-cache-profile.json');
+  fs.writeFileSync(profile, JSON.stringify({ schema: 1, source: 'official-desktop-features', desktopVersion: 'fixture-version',
+    capturedAt: new Date().toISOString(), features: { '123': { value: false, on: false, off: true, source: 'defaultValue' } },
+    web: { buildId: 'current-web', gatedImports: { current: { hash: 'current-module' } } } }));
+  const instance = await start({ CLAUDE_LOCAL_DESKTOP_FEATURES_FILE: profile,
+    CLAUDE_LOCAL_DESKTOP_VERSION: 'fixture-version', CLAUDE_LOCAL_CACHE_DIR: cache }, dir);
+  try {
+    const health = await request(instance, '/__codex_claude_local/health');
+    assert.equal(health.json.uiResources, 'web-cache');
+    const shell = await request(instance, '/epitaxy', { host: 'claude.ai' });
+    assert.match(shell.bytes.toString(), /data-build-id="current-web"/);
+  } finally { await stop(instance); }
+});
+
 test("managed desktop feature endpoint retains evaluated reference values and user controls", async () => {
   const file = path.join(root, "desktop-feature-profile.json");
   fs.writeFileSync(file, JSON.stringify({ schema: 1, source: "official-desktop-features", desktopVersion: "fixture-version",

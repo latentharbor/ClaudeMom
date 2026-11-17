@@ -16,6 +16,7 @@ const instanceId = process.env.CLAUDE_LOCAL_INSTANCE_ID;
 const requestedPort = Number(process.env.CLAUDE_LOCAL_SERVICE_PORT || 0);
 let current, wanted, worker, workerPort, workerHealth = {}, lastReport = 0, safe = false;
 let activeRequests = 0, switching = true, stopping = false, lastError = null;
+let approvedCoreRevision = null;
 const tunnels = new Set(), waiters = new Set();
 let attempted = '';
 
@@ -63,6 +64,7 @@ async function available() {
 async function boot(next) {
   switching = true;
   safe = false;
+  approvedCoreRevision = null;
   lastReport = 0;
   // Keep versioned code immutable; no new manager overwrites a running core.
   const child = spawn(process.execPath, [next.worker, '--port', '0', '--mode', 'mock', '--log', '0', '--ca', path.join(root, 'ca')], {
@@ -90,6 +92,7 @@ async function boot(next) {
       if (message?.type === 'tasks') {
         lastReport = Date.now();
         safe = message.idle === true && message.active === 0 && message.draft === false && message.toolsReady === true;
+        approvedCoreRevision = safe ? message.preparedRevision : null;
       }
     });
     child.once('error', error => { clearTimeout(timeout); reject(error); });
@@ -118,8 +121,9 @@ async function reconcile() {
       return; // current is acknowledged by the core, never merely by a file write
     }
     // Missing/stale renderer evidence blocks replacement, including tool gaps.
+    worker.send({ type: 'updatePending', revision: wanted.coreRevision });
     if (!safe || Date.now() - lastReport >= 5000 || activeRequests !== 0 || workerHealth.activeInference !== 0 ||
-        workerHealth.activeDictation !== 0) return;
+        workerHealth.activeDictation !== 0 || approvedCoreRevision !== wanted.coreRevision) return;
     switching = true;
     const prepared = await new Promise(resolve => {
       const timeout = setTimeout(() => { worker.off('message', observe); resolve(false); }, 3000);

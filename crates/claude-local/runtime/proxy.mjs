@@ -45,6 +45,8 @@ let activeInference = 0;
 let frontendTasks = { idle: false, active: [], draft: true, toolsReady: false };
 let taskObservedAt = 0;
 let quiescing = false;
+let pendingCoreRevision = null;
+let uiAppliedRevision = null;
 let networkWarning = null;
 if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') dns.lookup('example.com', { all: true }, (error, addresses) => {
   if (!error && addresses.some(entry => isFakeIp(entry.address))) {
@@ -111,7 +113,8 @@ function addLocalizationShim(html, officialLocales) {
 function addDesktopShims(html, locales) {
   html = addLocalizationShim(html, locales);
   if (runtimeBridge && !html.includes('src="/__codex_plus/runtime-bridge.js"')) {
-    html = html.replace(/<head\b[^>]*>/i, head => `${head}<script src="/__codex_plus/runtime-bridge.js"></script>`);
+    const revision = /^[a-f0-9]{64}$/.test(process.env.CLAUDE_LOCAL_UI_REVISION || '') ? process.env.CLAUDE_LOCAL_UI_REVISION : '';
+    html = html.replace(/<head\b[^>]*>/i, head => `${head}<meta name="claudemom-ui-revision" content="${revision}"><script src="/__codex_plus/runtime-bridge.js"></script>`);
   }
   if (!browserSiteShim || html.includes(`src="${BROWSER_SITE_SHIM_PATH}"`)) return html;
   const head = /<head\b[^>]*>/i.exec(html);
@@ -195,7 +198,9 @@ const TEMPLATE_SHELL = (() => {
     return null;
   }
 })();
-const READ_CACHE = POC_DIR ? path.join(POC_DIR, ".cache") : CACHE_DIR;
+// Versioned code is immutable; the owner's evaluated web cache stays shared.
+// Only an explicit developer recording owns a separate data/cache directory.
+const READ_CACHE = runtime.recordedDir ? path.join(runtime.recordedDir, '.cache') : CACHE_DIR;
 const templateBootstrap = (() => {
   if (!POC_DIR) return null;
   try { return JSON.parse(fs.readFileSync(path.join(POC_MOCK, "bootstrap.json"), "utf8")); }
@@ -483,7 +488,7 @@ function jsonWithActiveOrg(res, obj, code = 200) {
 function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
-    configHash: hot.revision, activeInference, activeDictation: activeDictationWsConnections,
+    configHash: hot.revision, activeInference, activeDictation: activeDictationWsConnections, uiAppliedRevision,
     lastClientAt, ...(persistenceWarning || networkWarning || desktopUi.warning ? { warning: persistenceWarning || networkWarning || desktopUi.warning } : {}),
     ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source,
       webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template",
@@ -2130,6 +2135,7 @@ function handleSnapshot(req, res, hostHeader) {
   if (runtime.managed && isMainClaudeHost && url.pathname === '/__codex_plus/runtime-state') {
     if (req.method === 'GET') return json(res, { schema: 1, token: bridgeToken,
       revision: process.env.CLAUDE_LOCAL_UI_REVISION || '', quiescing, protocol: 1,
+      pendingCoreRevision, retiredSessions: hot.retiredSessions,
       activeWork: activeInference, activeDictation: activeDictationWsConnections });
     if (req.method !== 'POST' || req.headers.origin !== 'https://claude.ai' ||
         !constantToken(req.headers['x-claudemom-runtime-token'], bridgeToken)) return json(res, { error: 'Forbidden' }, 403);
@@ -2139,9 +2145,11 @@ function handleSnapshot(req, res, hostHeader) {
         if (quiescing) return json(res, { retry: true }, 409);
         frontendTasks = report;
         taskObservedAt = Date.now();
+        if (report.uiRevision === process.env.CLAUDE_LOCAL_UI_REVISION && report.toolsReady) uiAppliedRevision = report.uiRevision;
         hot.tasks(report.active);
+        hot.confirmIdle(report.confirmedIdle || []);
         process.send?.({ type: 'tasks', idle: report.idle, active: report.active.length,
-          draft: report.draft, toolsReady: report.toolsReady });
+          draft: report.draft, toolsReady: report.toolsReady, preparedRevision: report.preparedRevision });
         return json(res, { revision: hot.revision, applied: true });
       } catch { return json(res, { error: 'Invalid native task snapshot' }, 400); }
     });
@@ -2934,6 +2942,7 @@ if (runtime.managed && process.env.CLAUDE_LOCAL_CORE_WORKER !== '1') {
 
 if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') {
   process.on('message', message => {
+    if (message?.type === 'updatePending' && /^[a-f0-9]{64}$/.test(message.revision)) pendingCoreRevision = message.revision;
     if (message?.type === 'configure') {
       try { hot.apply(message.env, message.revision); writeReady(); }
       catch { process.send?.({ type: 'configurationRejected' }); }

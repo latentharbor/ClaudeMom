@@ -6,7 +6,8 @@
   window.__claudeMomRuntimeBridge = true;
   const endpoint = '/__codex_plus/runtime-state';
   const fetch = window.fetch.bind(window);
-  let token, revision, polling = false, stopped = false;
+  let token, polling = false, stopped = false, lastPrepareAttempt = 0;
+  const loadedRevision = document.querySelector('meta[name="claudemom-ui-revision"]')?.content || '';
   const pending = new Set();
   const busy = s => s.isRunning !== false || s.isStopping === true || s.pendingAgentRuns > 0 ||
     s.pendingInput === true || s.sideChatInFlight === true || s.cwdMove === true || s.outputStyleRefresh === true ||
@@ -20,7 +21,7 @@
     token = value.token;
     return value;
   }
-  async function report(extra = []) {
+  async function report(extra = [], confirmation = {}) {
     const api = window['claude.web'];
     if (!api?.LocalSessions?.getAll || !api?.LocalAgentModeSessions?.getAll) throw Error('Native idle status unavailable');
     const [code, cowork] = await Promise.all([api.LocalSessions.getAll(), api.LocalAgentModeSessions.getAll()]);
@@ -32,11 +33,11 @@
     const response = await fetch(endpoint, { method: 'POST', cache: 'no-store',
       headers: { 'content-type': 'application/json', 'x-claudemom-runtime-token': token },
       body: JSON.stringify({ schema: 1, active, idle: active.length === 0, draft,
-        toolsReady: api.LocalSessions.sendMessage.__claudeMomGuarded === true &&
-          api.LocalAgentModeSessions.sendMessage.__claudeMomGuarded === true }),
+        uiRevision: document.querySelector('meta[name="claudemom-ui-revision"]')?.content || '',
+        toolsReady: typeof api.LocalSessions.applyModelByRestart === 'function', ...confirmation }),
       signal: AbortSignal.timeout(4000) });
     if (!response.ok) throw Error('Runtime is changing');
-    return { code, cowork, active, draft };
+      return { code, cowork, active, draft };
   }
   function wrapSend(api) {
     if (!api?.sendMessage || api.sendMessage.__claudeMomGuarded) return;
@@ -65,23 +66,36 @@
       wrapSend(window['claude.web']?.LocalSessions);
       wrapSend(window['claude.web']?.LocalAgentModeSessions);
       const snapshot = await report();
-      if (revision && current.revision !== revision && snapshot.active.length === 0 && !snapshot.draft &&
-          current.activeWork === 0 && current.activeDictation === 0) {
-        // Native API does its own final busy check before warming a fresh SDK.
-        for (const session of snapshot.code) {
-          if (session.sessionId?.startsWith('local_') && !busy(session) && typeof session.model === 'string') {
-            const result = await window['claude.web'].LocalSessions.applyModelByRestart(session.sessionId, session.model);
-            if (!['restarted', 'applies_on_next_start'].includes(result)) return;
-          }
+      window.__claudeMomRuntimeBridgeStatus = { code: snapshot.code.length, cowork: snapshot.cowork.length,
+        active: snapshot.active.length, draft: snapshot.draft, loadedRevision,
+        missingModel: snapshot.code.filter(s => typeof s.model !== 'string').length };
+      const uiChanged = loadedRevision && current.revision !== loadedRevision;
+      const retired = new Set(current.retiredSessions || []);
+      const normalize = id => id?.replace(/^local_/, '');
+      const stale = snapshot.code.filter(s => retired.has(normalize(idOf(s))) || retired.has(normalize(s.sessionId)));
+      if ((uiChanged || current.pendingCoreRevision || stale.length) && snapshot.active.length === 0 && !snapshot.draft &&
+          current.activeWork === 0 && current.activeDictation === 0 && Date.now() - lastPrepareAttempt > 10000) {
+        lastPrepareAttempt = Date.now();
+        const confirmedIdle = [];
+        // This native method checks private side chats, pending input, agent
+        // runs and cwd/output-style changes which list snapshots cannot prove.
+        for (const session of uiChanged || current.pendingCoreRevision ? snapshot.code : stale) {
+          if (!session.sessionId?.startsWith('local_') || busy(session) || typeof session.model !== 'string') return;
+          const result = await window['claude.web'].LocalSessions.applyModelByRestart(session.sessionId, session.model);
+          if (!['restarted', 'applies_on_next_start'].includes(result)) return;
+          confirmedIdle.push(idOf(session), session.sessionId);
+          sessionStorage.setItem('claudeMom.lastNativeRefresh', result);
         }
-        const final = await report();
+        const final = await report([], { confirmedIdle, preparedRevision: current.pendingCoreRevision || '' });
         const latest = await state();
         if (final.active.length || final.draft || latest.activeWork || latest.activeDictation) return;
-        location.reload();
-        return;
+        if (uiChanged) {
+          sessionStorage.setItem('claudeMom.lastUiRefresh', current.revision);
+          location.reload();
+          return;
+        }
       }
-      revision = current.revision;
-    } catch { /* Unknown version/state: queue the change, never assume idle. */ }
+    } catch (error) { window.__claudeMomRuntimeBridgeError = String(error.message).slice(0, 256); }
     finally { polling = false; }
   }
   const timer = setInterval(poll, 2000);

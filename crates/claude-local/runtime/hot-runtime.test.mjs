@@ -19,6 +19,8 @@ test('routing remains pinned across an HTTP-free tool phase, and advances only a
   resume();
   assert.equal(await pending, 'first');
   hot.tasks([]);
+  assert.equal(hot.run('abc', () => hot.runtime.key), 'first', 'a list snapshot alone cannot prove private agent runs are idle');
+  hot.confirmIdle(['abc']);
   assert.equal(hot.run('abc', () => hot.runtime.key), 'second');
 });
 

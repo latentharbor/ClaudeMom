@@ -24,15 +24,17 @@ test('stable listener survives its GUI pipe; idle barrier, queued handoff and ro
   const source = `import http from 'node:http';import fs from 'node:fs';
     const file=process.env.CODEX_PLUS_STATE_DIR+'/writer';
     const lock=fs.openSync(file,'wx');
-    let active=0;
+    let active=0,pendingRevision,busy=false;
     const health=()=>process.send({type:'health',health:{port:server.address().port,activeInference:active,activeDictation:0,configHash:process.env.CLAUDE_LOCAL_CONFIG_REVISION}});
     const server=http.createServer((req,res)=>{
       if(req.url==='/busy'||req.url==='/idle'){
-        process.send({type:'tasks',idle:req.url==='/idle',active:req.url==='/busy'?1:0,draft:false,toolsReady:true});
+        busy=req.url==='/busy';
+        process.send({type:'tasks',idle:!busy,active:busy?1:0,draft:false,toolsReady:true,preparedRevision:pendingRevision});
       }
       res.end(process.env.CLAUDE_LOCAL_GATEWAY_MODEL);
     }).listen(0,'127.0.0.1',health);
     process.on('message',m=>{
+      if(m.type==='updatePending'){pendingRevision=m.revision;if(!busy)process.send({type:'tasks',idle:true,active:0,draft:false,toolsReady:true,preparedRevision:pendingRevision});}
       if(m.type==='configure'){process.env.CLAUDE_LOCAL_GATEWAY_MODEL=m.env.CLAUDE_LOCAL_GATEWAY_MODEL;process.env.CLAUDE_LOCAL_CONFIG_REVISION=m.revision;health();}
       if(m.type==='prepareUpdate')process.send({type:'prepared',idle:true});
       if(m.type==='shutdown'){fs.closeSync(lock);fs.unlinkSync(file);server.close(()=>process.exit(0));}

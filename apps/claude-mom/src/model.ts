@@ -84,7 +84,7 @@ export type ClaudeStatus = {
   contextWindow?: number | null;
   warning?: string | null;
   needsRestart: boolean;
-  updateState?: 'applied' | 'applying' | 'waiting_idle' | 'restart_required';
+  updateState?: 'applied' | 'applying' | 'waiting_idle' | 'waiting_ui' | 'restart_required';
   serviceIndependent?: boolean;
   activeDictation?: number;
 };

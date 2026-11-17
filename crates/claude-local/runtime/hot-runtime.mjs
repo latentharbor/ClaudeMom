@@ -27,6 +27,7 @@ export function createHotRuntime(env) {
     runtime,
     get current() { return current; },
     get revision() { return revision; },
+    get retiredSessions() { return [...sessions].filter(([, snapshot]) => snapshot !== current).map(([id]) => id); },
     apply(nextEnv, nextRevision) {
       const next = runtimeConfig(nextEnv); // validate the entire candidate first
       current = next;
@@ -35,9 +36,14 @@ export function createHotRuntime(env) {
     tasks(ids) {
       const next = new Set(ids.map(id => id.replace(/^local_/, '')));
       for (const id of next) if (!sessions.has(id)) sessions.set(id, current);
-      for (const id of active) if (!next.has(id)) sessions.delete(id);
       active.clear();
       for (const id of next) active.add(id);
+    },
+    confirmIdle(ids) {
+      for (const value of ids) {
+        const id = value.replace(/^local_/, '');
+        if (!active.has(id)) sessions.delete(id);
+      }
     },
     run(id, fn) {
       if (id && !sessions.has(id)) {
@@ -61,5 +67,10 @@ export function validateTaskReport(value) {
       value.active.some(id => typeof id !== 'string' || !uuid.test(id)) ||
       typeof value.idle !== 'boolean' || typeof value.draft !== 'boolean' ||
       typeof value.toolsReady !== 'boolean') throw Error('Invalid native task report');
+  if (value.uiRevision !== undefined && (typeof value.uiRevision !== 'string' ||
+      !/^(?:[a-f0-9]{64})?$/.test(value.uiRevision))) throw Error('Invalid UI revision');
+  if (value.confirmedIdle !== undefined && (!Array.isArray(value.confirmedIdle) || value.confirmedIdle.length > 4096 ||
+      value.confirmedIdle.some(id => typeof id !== 'string' || !uuid.test(id)))) throw Error('Invalid idle identities');
+  if (value.preparedRevision !== undefined && !/^(?:[a-f0-9]{64})?$/.test(value.preparedRevision)) throw Error('Invalid prepared revision');
   return value;
 }
