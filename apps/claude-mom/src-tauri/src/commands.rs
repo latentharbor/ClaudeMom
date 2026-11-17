@@ -56,6 +56,7 @@ fn mutate<T>(change: impl FnOnce(&mut UpstreamBook) -> anyhow::Result<T>) -> any
     let mut book = load()?;
     let value = change(&mut book)?;
     claude_mom::save_book(&claude_mom::default_book_path(), &book)?;
+    claude_local::refresh_runtime()?;
     Ok((book, value))
 }
 

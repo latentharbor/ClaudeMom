@@ -58,6 +58,9 @@ pub struct TemplateVersion {
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("service.mjs", include_bytes!("../runtime/service.mjs")),
+    ("hot-runtime.mjs", include_bytes!("../runtime/hot-runtime.mjs")),
+    ("runtime-bridge.js", include_bytes!("../runtime/runtime-bridge.js")),
     (
         "proxy.mjs",
         include_bytes!("../runtime/proxy.mjs"),
@@ -150,6 +153,8 @@ pub struct ClaudeLocalStatus {
     pub hidden_models: Vec<String>,
     pub warning: Option<String>,
     pub needs_restart: bool,
+    pub update_state: String,
+    pub service_independent: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -406,6 +411,25 @@ fn private_file(path: &Path) -> Result<File> {
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     private_file(path)?.write_all(bytes)?;
     Ok(())
+}
+
+fn atomic_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        ensure!(meta.is_file() && !meta.file_type().is_symlink(), "本地服务私有文件无效");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    crate::fsutil::atomic_write_with(path, |file| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(bytes)
+    })
 }
 
 // ── 真实 profile 的 1p/3p 切换 ─────────────────────────────────
@@ -1571,6 +1595,12 @@ pub fn resume_attached_proxy() -> Result<Option<u16>> {
     }
     let config = host().load_config()?;
     let root = root_dir();
+    if let Some((port, _, _, health)) = runtime_status() {
+        if health.get("serviceProtocol").and_then(Value::as_u64) == Some(1) {
+            refresh_running(&config)?;
+        }
+        return Ok(Some(port));
+    }
     let Some(port) = resume_port(
         runtime_status().is_some(),
         ready_port(&root),
@@ -1632,6 +1662,18 @@ fn read_health(port: u16) -> Result<Value> {
 }
 
 fn runtime_status() -> Option<(u16, String, String, Value)> {
+    if runtime_slot().lock().unwrap_or_else(|error| error.into_inner()).is_none() {
+        let root = root_dir();
+        let receipt: Value = serde_json::from_slice(&fs::read(root.join("ready.json")).ok()?).ok()?;
+        let port = receipt.get("port")?.as_u64()?.try_into().ok()?;
+        let pid: u32 = receipt.get("pid")?.as_u64()?.try_into().ok()?;
+        let instance = receipt.get("instanceId")?.as_str()?;
+        if !is_our_proxy(pid, &root) { return None; }
+        let health = read_health(port).ok()?;
+        if parse_ready(&health, instance, pid) != Some(port) { return None; }
+        let hash = health.get("configHash").and_then(Value::as_str).unwrap_or("").to_string();
+        return Some((port, instance.to_string(), hash, health));
+    }
     let mut slot = runtime_slot()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -1646,6 +1688,7 @@ fn runtime_status() -> Option<(u16, String, String, Value)> {
     let pid = runtime.child.id();
     drop(slot);
     let health = read_health(port).ok()?;
+    let hash = health.get("configHash").and_then(Value::as_str).unwrap_or(&hash).to_string();
     (parse_ready(&health, &instance, pid) == Some(port)).then_some((port, instance, hash, health))
 }
 
@@ -1678,12 +1721,17 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         .and_then(|value| value.get("configHash"))
         .and_then(Value::as_str)
         .is_some_and(|hash| hash != config_hash(&config));
+    let independent = runtime.as_ref().is_some_and(|(_, _, _, h)| h.get("serviceProtocol").and_then(Value::as_u64) == Some(1));
     let needs_restart = (config.enabled && claude_running && (!local_process || !running))
-        || runtime
+        || (!independent && (runtime
             .as_ref()
             .is_some_and(|(_, _, hash, _)| hash != &config_hash(&config))
-        || (!config.enabled && local_process)
-        || (claude_running && changed_since_launch);
+            || (claude_running && changed_since_launch)))
+        || (!config.enabled && local_process);
+    let update_state = if needs_restart { "restart_required" }
+        else if runtime.as_ref().is_some_and(|(_, _, _, h)| !h.get("pendingCoreRevision").is_none_or(Value::is_null)) { "waiting_idle" }
+        else if runtime.as_ref().is_some_and(|(_, _, hash, _)| hash != &config_hash(&config)) { "applying" }
+        else { "applied" }.to_string();
     let preview = host().preview_upstream(&config);
     let (models, hidden_models, context_window, upstream_problem) = match &preview {
         Ok(upstream) => (
@@ -1735,6 +1783,8 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         hidden_models,
         warning,
         needs_restart,
+        update_state,
+        service_independent: independent,
     })
 }
 
@@ -1744,7 +1794,22 @@ pub fn configure(config: ClaudeLocalSettings) -> Result<ClaudeLocalStatus> {
         .map_err(|_| anyhow::anyhow!("另一项 Claude 本地服务操作正在进行"))?;
     let config = validate_config(config)?;
     host().save_config(&config)?;
+    refresh_running(&config)?;
     status()
+}
+
+pub fn refresh_runtime() -> Result<()> {
+    let _guard = OPERATION.try_lock().map_err(|_| anyhow::anyhow!("另一项本地服务操作正在进行"))?;
+    refresh_running(&host().load_config()?)
+}
+
+fn refresh_running(config: &ClaudeLocalSettings) -> Result<()> {
+    let Some((port, _, _, health)) = runtime_status() else { return Ok(()) };
+    if health.get("serviceProtocol").and_then(Value::as_u64) != Some(1) { return Ok(()); }
+    let node = node_runtime().context("未找到 Node.js")?;
+    let upstream = host().prepare_upstream(config)?;
+    start_backend(&root_dir(), &node, config, &upstream, Some(port))?;
+    Ok(())
 }
 
 fn wait_backend_ready(
@@ -1770,6 +1835,19 @@ fn wait_backend_ready(
         ensure!(Instant::now() < deadline, "Claude 本地服务启动超时");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn service_client_key(root: &Path) -> Result<String> {
+    let file = root.join("client-key");
+    if let Ok(meta) = fs::symlink_metadata(&file) {
+        ensure!(meta.is_file() && !meta.file_type().is_symlink(), "本地服务密钥文件无效");
+        let key = fs::read_to_string(&file)?;
+        ensure!(uuid::Uuid::parse_str(&key).is_ok(), "本地服务密钥格式无效");
+        return Ok(key);
+    }
+    let key = uuid::Uuid::new_v4().to_string();
+    atomic_private(&file, key.as_bytes())?;
+    Ok(key)
 }
 
 fn prepare_dictation(root: &Path, node: &Path) -> Result<()> {
@@ -1834,23 +1912,21 @@ fn start_backend(
     upstream: &Upstream,
     preferred_port: Option<u16>,
 ) -> Result<u16> {
-    if let Some((port, _, hash, _)) = runtime_status()
-        && hash == config_hash(config)
-    {
-        return Ok(port);
-    }
-    stop_backend();
     ensure!(upstream.ready(), "还没有可用的上游：先配置上游并选一个默认模型");
     // 本地听写的转写走宿主的听写服务（它写 dictation-helper.json 凭据），开着原生听写时先确保它在线。
     if config.voice_input {
         host().prepare_dictation_service()?;
     }
     let instance = uuid::Uuid::new_v4().to_string();
+    let release = root.join("releases").join(assets_digest());
+    install_assets(&release)?;
+    install_assets(root)?;
+    let client_key = service_client_key(root)?;
     let ready_file = root.join("ready.json");
     let log = private_file(&root.join("proxy.log"))?;
     let mut command = hidden_command(node);
     command
-        .arg(root.join("proxy.mjs"))
+        .arg(root.join("service.mjs"))
         // 恢复挂接时优先在原端口重启：Claude 只认启动时的 --proxy-server 端口。
         // 请求日志默认关（会记下访问的路径）；排障时在宿主进程环境里设 CLAUDE_LOCAL_LOG=1 打开，写进 proxy.log。
         .args([
@@ -1899,6 +1975,7 @@ fn start_backend(
         .env("CLAUDE_LOCAL_STATE_FILE", root.join("conversations.json"))
         .env("CLAUDE_LOCAL_READY_FILE", &ready_file)
         .env("CLAUDE_LOCAL_INSTANCE_ID", &instance)
+        .env("CLAUDE_LOCAL_CLIENT_KEY", &client_key)
         .env("CLAUDE_LOCAL_LOCALIZATION", flag(config.localization))
         .env("CLAUDE_LOCAL_VOICE_INPUT", flag(config.voice_input))
         .env("CLAUDE_LOCAL_ALLOW_ALL_BROWSER_SITES", flag(config.allow_all_browser_sites))
@@ -1915,8 +1992,41 @@ fn start_backend(
     if let Some(dir) = recorded_data_dir() {
         command.env("CLAUDE_LOCAL_RECORDED_DIR", dir);
     }
+    let env: BTreeMap<String, String> = command.get_envs().filter_map(|(key, value)|
+        value.map(|value| (key.to_string_lossy().to_string(), value.to_string_lossy().to_string()))).collect();
+    let mut core_env = env.clone();
+    for name in ["CLAUDE_LOCAL_GATEWAY_URL", "CLAUDE_LOCAL_GATEWAY_KEY", "CLAUDE_LOCAL_GATEWAY_MODEL",
+        "CLAUDE_LOCAL_GATEWAY_SMALL_MODEL", "CLAUDE_LOCAL_ALLOW_ALL_BROWSER_SITES", "CLAUDE_LOCAL_INSTANCE_ID"] {
+        core_env.remove(name);
+    }
+    let core_revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&(&core_env, assets_digest(), desktop_fingerprint(),
+        fs::read(root.join("desktop-features.json")).unwrap_or_default()))?));
+    let mut env = env;
+    env.insert("CLAUDE_LOCAL_UI_REVISION".into(), core_revision.clone());
+    let descriptor = root.join("service-config.json");
+    atomic_private(&descriptor, &serde_json::to_vec(&json!({
+        "schema": 1, "revision": config_hash(config), "coreRevision": core_revision,
+        "worker": release.join("proxy.mjs"), "env": env,
+    }))?)?;
+    if let Some((port, _, _, health)) = runtime_status() {
+        ensure!(health.get("serviceProtocol").and_then(Value::as_u64) == Some(1),
+            "旧版本代理仍在运行；请在任务结束后手动停止并重新启动 Claude 完成迁移");
+        return Ok(port);
+    }
+    command.env("CLAUDE_LOCAL_SERVICE_CONFIG", descriptor)
+        .env("CLAUDE_LOCAL_SERVICE_PORT", preferred_port.unwrap_or(0).to_string());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::CREATE_NO_WINDOW | 0x00000008 | 0x00000200);
+    }
     command
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
     let mut child = command.spawn().context("无法启动 Claude 本地兼容服务")?;
@@ -2202,7 +2312,9 @@ fn launch_original(
             // （就是本地服务），不经代理、也不需要模拟账号。只换 deploymentMode 和 configLibrary。
             let sets = profile_sets();
             apply_real_profile(&sets, root, "3p")?;
-            write_gateway_library(&sets, &gateway_config_entry(port, upstream))?;
+            let mut local = upstream.clone();
+            local.token = service_client_key(root)?;
+            write_gateway_library(&sets, &gateway_config_entry(port, &local))?;
             command.arg(gateway_flag(port));
             if localization {
                 command.arg("--lang=zh-CN");
@@ -2219,8 +2331,8 @@ fn launch_original(
         command
             .args(local_launch_args(root, port, localization))
             .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
-            .env("ANTHROPIC_API_KEY", &upstream.token)
-            .env("ANTHROPIC_AUTH_TOKEN", &upstream.token)
+            .env("ANTHROPIC_API_KEY", service_client_key(root)?)
+            .env("ANTHROPIC_AUTH_TOKEN", service_client_key(root)?)
             .env("NO_PROXY", "localhost,127.0.0.1")
             .env("no_proxy", "localhost,127.0.0.1");
         if crate::host::isolated_desktop_app().is_some() {
@@ -2253,6 +2365,11 @@ pub fn launch_claude(source: &Path, configure: impl FnOnce(&mut Command)) -> Res
 
 /// 只停止本程序自己持有的代理进程，不关闭 Claude 或其它实例。
 pub fn stop_backend() {
+    if let Some((_, instance, _, health)) = runtime_status()
+        && health.get("serviceProtocol").and_then(Value::as_u64) == Some(1) {
+        let _ = atomic_private(&root_dir().join("service-stop.json"),
+            &serde_json::to_vec(&json!({"instanceId": instance})).unwrap_or_default());
+    }
     let runtime = runtime_slot()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -2393,7 +2510,7 @@ fn is_our_proxy(pid: u32, root: &Path) -> bool {
     #[cfg(windows)]
     {
         return crate::winproc::process_command_line(pid).is_some_and(|command| {
-            command.contains("proxy.mjs")
+            (command.contains("proxy.mjs") || command.contains("service.mjs"))
                 && command.contains(&root.to_string_lossy().to_string())
         });
     }
@@ -2406,7 +2523,7 @@ fn is_our_proxy(pid: u32, root: &Path) -> bool {
             .output();
         let Ok(output) = output else { return false };
         let command = String::from_utf8_lossy(&output.stdout);
-        command.contains("proxy.mjs") && command.contains(&root.to_string_lossy().to_string())
+        (command.contains("proxy.mjs") || command.contains("service.mjs")) && command.contains(&root.to_string_lossy().to_string())
     }
 }
 

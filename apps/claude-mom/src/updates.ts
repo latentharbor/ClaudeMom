@@ -34,7 +34,7 @@ export async function checkForUpdate(): Promise<UpdateState> {
   }
 }
 
-/** 下载并安装，然后重启。安装前本地服务会随程序退出而停止，Claude 下次启动时重新接上。 */
+/** The independent inference service survives the manager's update/relaunch. */
 export async function installUpdate(update: Update, onProgress: (percent: number | null) => void): Promise<void> {
   if (LAB_BUILD) throw new Error("The isolated UI lab does not install application updates.");
   let total = 0;

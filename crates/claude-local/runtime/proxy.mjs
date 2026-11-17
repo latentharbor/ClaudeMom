@@ -32,9 +32,18 @@ import { createOfficialAssets } from "./official-assets.mjs";
 import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
 import { selectUiResources } from "./ui-resources.mjs";
 import { createSitePolicyHandler, isSitePolicyUrl } from "./site-policy.mjs";
+import { createHotRuntime, requestSession, constantToken, validateTaskReport } from './hot-runtime.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const runtime = runtimeConfig();
+const hot = createHotRuntime(process.env);
+const runtime = hot.runtime;
+const clientKey = process.env.CLAUDE_LOCAL_CLIENT_KEY || runtime.key;
+const bridgeToken = crypto.randomBytes(32).toString('hex');
+let activeInference = 0;
+let frontendTasks = { idle: false, active: [], draft: true, toolsReady: false };
+let taskObservedAt = 0;
+let quiescing = false;
+hot.apply(process.env, process.env.CLAUDE_LOCAL_CONFIG_REVISION || '');
 const officialAssets = runtime.managed
   ? createOfficialAssets(process.env.CLAUDE_LOCAL_DESKTOP_RESOURCES)
   : null;
@@ -46,6 +55,7 @@ const BROWSER_SITE_SHIM_PATH = "/__codex_plus/browser-site-consent.js";
 const BROWSER_SITE_CONFIG_PATH = "/__codex_plus/browser-site-consent.json";
 const browserSiteShim = managedResources
   ? fs.readFileSync(path.join(here, "browser-site-consent.js")) : null;
+const runtimeBridge = managedResources ? fs.readFileSync(path.join(here, 'runtime-bridge.js')) : null;
 const localizationShim = runtime.managed && !runtime.recordedDir && runtime.localization
   ? fs.readFileSync(path.join(here, "page-shim.js"))
   : null;
@@ -92,6 +102,9 @@ function addLocalizationShim(html, officialLocales) {
 
 function addDesktopShims(html, locales) {
   html = addLocalizationShim(html, locales);
+  if (runtimeBridge && !html.includes('src="/__codex_plus/runtime-bridge.js"')) {
+    html = html.replace(/<head\b[^>]*>/i, head => `${head}<script src="/__codex_plus/runtime-bridge.js"></script>`);
+  }
   if (!browserSiteShim || html.includes(`src="${BROWSER_SITE_SHIM_PATH}"`)) return html;
   const head = /<head\b[^>]*>/i.exec(html);
   const end = /<\/head\s*>/i.exec(html);
@@ -462,6 +475,7 @@ function jsonWithActiveOrg(res, obj, code = 200) {
 function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
+    configHash: hot.revision, activeInference, activeDictation: activeDictationWsConnections,
     lastClientAt, ...(persistenceWarning || desktopUi.warning ? { warning: persistenceWarning || desktopUi.warning } : {}),
     ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source,
       webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template",
@@ -471,6 +485,7 @@ function health() {
 
 let readyWriteTimer;
 function writeReady() {
+  if (process.send) process.send({ type: 'health', health: health() });
   if (!READY_FILE) return;
   const temporary = `${READY_FILE}.${process.pid}.tmp`;
   try {
@@ -1817,6 +1832,13 @@ function serveDocShell(req, res, url) {
 }
 
 function forwardGateway(req, res, requestPath, raw) {
+  if (quiescing) return json(res, { error: 'Local service is applying an idle update; retry shortly' }, 503);
+  try { return hot.run(requestSession(req.headers, raw), () => forwardGatewaySnapshot(req, res, requestPath, raw)); }
+  catch { return json(res, { error: 'Native task configuration unavailable' }, 503); }
+}
+
+function forwardGatewaySnapshot(req, res, requestPath, raw) {
+  trackWork(res);
   let body = raw;
   const requested = new URL(requestPath, "http://localhost");
   if (req.method === "POST" && requested.pathname === "/v1/messages") {
@@ -2070,6 +2092,16 @@ const handleSitePolicy = createSitePolicyHandler({ request: upstreamRequest,
 const demoHtml = MODE === "demo" ? fs.readFileSync(path.join(here, "demo", "index.html")) : null;
 
 function handle(req, res, hostHeader) {
+  return hot.run(null, () => handleSnapshot(req, res, hostHeader));
+}
+function trackWork(res) {
+  activeInference++;
+  let done = false;
+  const finish = () => { if (!done) { done = true; activeInference--; writeReady(); } };
+  res.once('close', finish); res.once('finish', finish);
+  writeReady();
+}
+function handleSnapshot(req, res, hostHeader) {
   const host = hostHeader || "claude.ai";
   const url = new URL(req.url, `https://${host}`);
   noteClient();
@@ -2077,6 +2109,29 @@ function handle(req, res, hostHeader) {
 
   const hostName = url.hostname.toLowerCase();
   const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
+  if (runtime.managed && isMainClaudeHost && url.pathname === '/__codex_plus/runtime-state') {
+    if (req.method === 'GET') return json(res, { schema: 1, token: bridgeToken,
+      revision: process.env.CLAUDE_LOCAL_UI_REVISION || '', quiescing, protocol: 1 });
+    if (req.method !== 'POST' || req.headers.origin !== 'https://claude.ai' ||
+        !constantToken(req.headers['x-claudemom-runtime-token'], bridgeToken)) return json(res, { error: 'Forbidden' }, 403);
+    return readBody(req, raw => {
+      try {
+        const report = validateTaskReport(JSON.parse(raw));
+        if (quiescing) return json(res, { retry: true }, 409);
+        frontendTasks = report;
+        taskObservedAt = Date.now();
+        hot.tasks(report.active);
+        process.send?.({ type: 'tasks', idle: report.idle, active: report.active.length,
+          draft: report.draft, toolsReady: report.toolsReady });
+        return json(res, { revision: hot.revision, applied: true });
+      } catch { return json(res, { error: 'Invalid native task snapshot' }, 400); }
+    });
+  }
+  if (runtime.managed && isMainClaudeHost && url.pathname === '/__codex_plus/runtime-bridge.js' && req.method === 'GET' && runtimeBridge) {
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(runtimeBridge);
+  }
+  if (runtime.managed && isMainClaudeHost && req.method === 'POST' && !url.pathname.startsWith('/__codex_plus/')) trackWork(res);
   // A missing policy verdict must never fall through to the generic {} mock.
   // Keep the official anonymous classification, including denies/high risk.
   if (MODE === "mock" && isSitePolicyUrl(url)) return handleSitePolicy(req, res, url);
@@ -2703,7 +2758,7 @@ const outer = http.createServer((req, res) => {
       ? req.headers.authorization.slice(7) : "";
     const supplied = typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"] : bearer;
     const actual = Buffer.from(supplied);
-    const expected = Buffer.from(runtime.key);
+    const expected = Buffer.from(clientKey);
     if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
       return json(res, { error: "Local gateway authorization required" }, 403);
     }
@@ -2853,7 +2908,27 @@ function shutdown() {
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
-if (runtime.managed) {
+if (runtime.managed && process.env.CLAUDE_LOCAL_CORE_WORKER !== '1') {
   process.stdin.on("end", shutdown);
   process.stdin.resume();
+}
+
+if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') {
+  process.on('message', message => {
+    if (message?.type === 'configure') {
+      try { hot.apply(message.env, message.revision); writeReady(); }
+      catch { process.send?.({ type: 'configurationRejected' }); }
+    }
+    if (message?.type === 'prepareUpdate') {
+      const idle = activeInference === 0 && activeDictationWsConnections === 0 &&
+        Date.now() - taskObservedAt < 5000 && frontendTasks.idle &&
+        !frontendTasks.active.length && !frontendTasks.draft && frontendTasks.toolsReady;
+      quiescing = idle;
+      process.send?.({ type: 'prepared', idle });
+    }
+    if (message?.type === 'shutdown') shutdown();
+  });
+  // Parent GUI is irrelevant; the independent service is the worker's owner.
+  process.once('disconnect', shutdown);
+  setInterval(writeReady, 1000).unref();
 }

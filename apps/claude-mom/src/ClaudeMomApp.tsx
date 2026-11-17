@@ -97,8 +97,12 @@ export function ClaudeMomApp() {
   // Claude 开着或本地服务在跑时每 3 秒刷新一次状态；闲着不轮询（检测要查进程和证书）。
   useEffect(() => {
     if ((!status?.running && !status?.claudeRunning) || busy) return;
-    const timer = setInterval(() => void refreshStatus(), 3000);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshStatus();
+    }, 3000);
+    const visible = () => { if (document.visibilityState === 'visible') void refreshStatus(); };
+    document.addEventListener('visibilitychange', visible);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
   }, [status?.running, status?.claudeRunning, busy, refreshStatus]);
 
   /** 同一时间只做一件事；结束后刷新状态。 */
@@ -270,7 +274,7 @@ export function ClaudeMomApp() {
           </div>
         </header>
 
-        {steps.length || status?.needsRestart || status?.warning ? (
+        {steps.length || status?.needsRestart || status?.warning || ['waiting_idle', 'applying'].includes(status?.updateState || '') ? (
           <div className="cm-banners">
             {steps.map((step) => (
               <div className="cm-banner" key={step.id}>
@@ -283,6 +287,8 @@ export function ClaudeMomApp() {
               </div>
             ))}
             {status?.needsRestart ? <div className="cm-banner" data-tone="info"><span>设置变了：完全退出 Claude 后重新启动生效。</span></div> : null}
+            {status?.updateState === 'waiting_idle' ? <div className="cm-banner" data-tone="info"><span>设置已保存：等待任务、草稿和录音结束后应用界面及工具更新。</span></div> : null}
+            {status?.updateState === 'applying' ? <div className="cm-banner" data-tone="info"><span>设置已保存，正在等待本地服务确认生效。</span></div> : null}
             {status?.warning && !steps.length ? <div className="cm-banner"><span>{status.warning}</span></div> : null}
           </div>
         ) : null}
@@ -333,7 +339,7 @@ export function ClaudeMomApp() {
         </section>
 
         <footer className="cm-status">
-          <span>{status?.port ? `本地服务 · 端口 ${status.port}` : "本地服务未运行"}</span>
+          <span>{status?.port ? `${status.serviceIndependent ? '独立本地服务' : '本地服务'} · 端口 ${status.port}` : "本地服务未运行"}</span>
           {update.phase === "available" ? (
             <button className="cm-update-chip" onClick={() => void runInstall()} type="button">新版本 {update.version}，点此更新</button>
           ) : update.phase === "downloading" ? (

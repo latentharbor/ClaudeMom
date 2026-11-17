@@ -103,7 +103,8 @@ pub fn run() {
             }
         }
         tauri::RunEvent::Exit => {
-            claude_local::stop_backend();
+            // The independent proxy survives GUI exits and application updates.
+            // Explicit Stop remains available to end the service and Desktop.
             claude_local::dictation::server::remove_receipt();
             log::append("app.exit", serde_json::json!({}));
         }
