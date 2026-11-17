@@ -49,7 +49,7 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
   };
   function notify(channel, event) {
     for (const res of listeners.get(channel) || []) {
-      if (!res.destroyed) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      if (!res.destroyed) {const {type,...row}=event;res.write(`event: ${type}\ndata: ${JSON.stringify(row)}\n\n`);}
     }
   }
   function find(channel) {
@@ -60,7 +60,7 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
     const row = { id:id('cmsg_'), channel_id:channel, body:'', created_at:now(), updated_at:now(),
       attachments:[], attached_outputs:[], ...values };
     data.messages.push(row);save();
-    notify(channel,{type:'message',message:row});
+    notify(channel,{type:'channel_message',...row});
     return row;
   }
   function stream(channel, req, res) {
@@ -123,11 +123,11 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
         }
       }
       if(suffix==='/messages/stream'&&method==='GET')return stream(channel,req,res);
-      if(suffix==='/messages'&&method==='GET') {
+      if((suffix==='/messages'||suffix==='/timeline')&&method==='GET') {
         let rows=data.messages.filter(m=>m.channel_id===channel);
         const root=url.searchParams.get('thread_id')||url.searchParams.get('thread_root_id');
         if(root)rows=rows.filter(m=>m.id===root||m.thread_root_id===root||m.in_reply_to_message_id===root);
-        if(url.searchParams.get('threads_only')==='true')rows=rows.filter(m=>m.thread_root_id===m.id);
+        if(url.searchParams.get('thread_roots_only')==='true')rows=rows.filter(m=>m.thread_root_id===m.id);
         return json(res,page(rows));
       }
       if(suffix==='/messages'&&method==='POST') {

@@ -55,6 +55,11 @@ jobs:
           cd crates/claude-local/runtime
           bash scripts/gen-ca.sh
           sudo security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain ca/ca.pem
+      - name: Independent local execution with owned bundled CLI
+        run: |
+          export PROJECTS_TEST_CLI="$PWD/$(find fixture/cli-cache -path '*/claude.app/Contents/MacOS/claude' -type f -print -quit)"
+          test -x "$PROJECTS_TEST_CLI"
+          node --test crates/claude-local/runtime/projects-runner.test.mjs
       - name: Native Projects UI and local API
         run: |
           node scripts/verify-ui-lab.mjs \

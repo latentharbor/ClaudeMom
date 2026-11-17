@@ -29,14 +29,14 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   result.projects={route:current.state.url,initial:current.state};
   const opened=await until(async()=>{
     const current=await frontend();if(!current)return false;
-    return evaluate(current,"(()=>{const e=[...document.querySelectorAll('button,a')].find(e=>/^(New project|Create project|新建项目|创建项目)$/i.test(e.textContent.trim()));if(!e)return false;e.click();return true;})()");
+    return evaluate(current,"(()=>{const e=[...document.querySelectorAll('button,a')].find(e=>/^(New project|Create project|新建项目|创建项目)$/i.test(e.textContent.replace(/[\\uE000-\\uF8FF]/g,'').trim()));if(!e)return false;e.click();return true;})()");
   },30000);
   assert.equal(opened,true);
   await delay(2000);current=await inspect();result.projects.dialog=current.state;
   const filled=await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('input')].find(e=>e.type!=='hidden'&&e.getBoundingClientRect().width>20);if(!e)return false;e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'LOCAL_PROJECTS_CI');e.dispatchEvent(new Event('input',{bubbles:true}));return true;})()");
   assert.equal(filled,true,'Project name field');
   await delay(500);
-  assert.equal(await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('button')].find(e=>!e.disabled&&/^(Create|Create project|创建|创建项目)$/i.test(e.textContent.trim()));if(!e)return false;e.click();return true;})()"),true);
+  assert.equal(await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('button')].find(e=>!e.disabled&&/^(Create|Create project|创建|创建项目)$/i.test(e.textContent.replace(/[\\uE000-\\uF8FF]/g,'').trim()));if(!e)return false;e.click();return true;})()"),true);
   const file=path.join(root,'projects-lab/projects.json');
   const saved=await until(()=>{try{const s=JSON.parse(fs.readFileSync(file));return s.channels.some(c=>c.name==='LOCAL_PROJECTS_CI')?s:null;}catch{return null;}});
   assert.equal(saved.channels.length,1);
