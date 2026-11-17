@@ -7,7 +7,7 @@ import {ProjectSandboxError} from './projects-sandbox.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const privateJSON=(file,value)=>fs.writeFileSync(file,JSON.stringify(value),{mode:0o600});
-export function createProjectRunner({directory,binary,baseUrl,clientKey,profileHome,onActiveChange=()=>{}}) {
+export function createProjectRunner({directory,binary,baseUrl,clientKey,profileHome,routing=()=>({}),onActiveChange=()=>{}}) {
   fs.mkdirSync(directory,{recursive:true,mode:0o700});
   const active=new Map(),legacy=new Set();let closed=false;
   const count=()=>onActiveChange(active.size);
@@ -66,6 +66,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
       else fs.writeFileSync(target,Buffer.from(file.content,'base64'),{flag:'wx',mode:0o400});
     }
     const api=typeof baseUrl==='function'?baseUrl():baseUrl;
+    const routes=routing();
     const transcripts=path.join(configDir,'projects');
     const savedTranscript=fs.existsSync(transcripts)&&fs.readdirSync(transcripts,{withFileTypes:true}).some(d=>
       d.isDirectory()&&fs.existsSync(path.join(transcripts,d.name,sessionId+'.jsonl')));
@@ -82,7 +83,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     const sandbox={required:true,version:1,backend:'macos-seatbelt',enforced:false};
     privateJSON(path.join(jobDir,'status.json'),{schema:1,id,sessionId,state:'starting',sandbox,createdAt:new Date().toISOString()});
     privateJSON(path.join(jobDir,'launch.json'),{id,sessionId,binary:executable,args,prompt:prompt+`\n\nProject Library snapshot: ${libraryRoot}`,cwd,
-      sandbox,role,runtimeDir:here,nodeBinary:process.execPath,upstream:api,clientKey,toolToken,
+      sandbox,role,runtimeDir:here,nodeBinary:process.execPath,upstream:api,clientKey,toolToken,routing:{models:routes.models||[],smallModel:routes.smallModel||model},
       controlToken:toolToken,env:{...environment(configDir,tmp),MCP_TOOL_TIMEOUT:'86400000'}});
     // The controller journals ownership before any external tool can execute.
     onPrepared({id,sessionId,directory:jobDir,workspace:cwd,sandbox});

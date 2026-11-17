@@ -36,7 +36,7 @@ async function finish(values) {
 }
 try{
   broker=await createProjectBroker({upstream:config.upstream,clientKey:config.clientKey,toolToken:config.toolToken,
-    jobId:config.id,model:config.args[config.args.indexOf('--model')+1],sessionId:config.sessionId});
+    jobId:config.id,model:config.args[config.args.indexOf('--model')+1],...config.routing,sessionId:config.sessionId});
   sockets=fs.mkdtempSync('/private/tmp/cm-project-');fs.chmodSync(sockets,0o700);
   const mcpFile=path.join(directory,'mcp.json');
   fs.writeFileSync(mcpFile,JSON.stringify({mcpServers:{local_project:{command:config.nodeBinary,args:[path.join(config.runtimeDir,'projects-mcp.mjs')],

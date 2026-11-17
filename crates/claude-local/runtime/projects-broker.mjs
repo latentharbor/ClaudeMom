@@ -5,12 +5,14 @@ import http from 'node:http';
 import {once} from 'node:events';
 import {constantToken} from './hot-runtime.mjs';
 import {createProjectNetwork} from './projects-network.mjs';
+import {gatewayModel} from './runtime.mjs';
 
-export async function createProjectBroker({upstream,clientKey,toolToken,jobId,model,sessionId,networkDependencies={}}) {
+export async function createProjectBroker({upstream,clientKey,toolToken,jobId,model,smallModel=model,models=[],sessionId,networkDependencies={}}) {
   const parent=new URL(upstream);
   if(parent.protocol!=='http:'||parent.hostname!=='127.0.0.1'||parent.pathname!=='/'||parent.search||parent.hash||parent.username||parent.password)throw Error('A local parent proxy is required');
   if(!clientKey||!toolToken||!/^[a-f0-9-]{36}$/i.test(jobId))throw Error('Invalid task broker credentials');
   const prefix=`/__codex_plus/projects-lab/jobs/${jobId}/tools`;
+  const routing={managed:true,model,smallModel,models:[...new Set([model,smallModel,...models])]};
   const sockets=new Set(),requests=new Set();let closed=false;
   const network=createProjectNetwork({parent,toolToken,jobId,...networkDependencies});let origin;
   const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
@@ -35,10 +37,10 @@ export async function createProjectBroker({upstream,clientKey,toolToken,jobId,mo
       const parts=[];let length=0;for await(const part of req){length+=part.length;if(length>16*1024*1024)return json(res,413,{error:{message:'Task request is too large'}});parts.push(part);}
       if(closed)return json(res,403,{error:{message:'Task has ended'}});
       let body=Buffer.concat(parts);
-      if(inference){const value=JSON.parse(body);if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid request');value.model=model;body=Buffer.from(JSON.stringify(value));}
+      if(inference){const value=JSON.parse(body);if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid request');value.model=gatewayModel(routing,value.model);body=Buffer.from(JSON.stringify(value));}
       const headers={'content-type':'application/json','content-length':body.length,authorization:`Bearer ${inference?clientKey:toolToken}`};
       if(inference){headers['x-api-key']=clientKey;headers['x-claude-code-session-id']=sessionId;
-        for(const name of ['anthropic-version','anthropic-beta','user-agent','x-app'])if(typeof req.headers[name]==='string')headers[name]=req.headers[name];}
+        for(const [name,value]of Object.entries(req.headers))if(typeof value==='string'&&(/^(?:anthropic-|x-stainless-)/.test(name)||['user-agent','x-app','x-client-request-id'].includes(name)))headers[name]=value;}
       const up=http.request({hostname:parent.hostname,port:parent.port,path:url.pathname+url.search,method:req.method,headers,timeout:300000,agent:false},response=>{
         res.writeHead(response.statusCode,{'content-type':response.headers['content-type']||'application/json','cache-control':'no-store'});response.pipe(res);
       });

@@ -569,6 +569,7 @@ if(projectsLab) {
   const directory=path.join(APP_STATE_DIR,'projects-lab'),profileHome=path.join(APP_STATE_DIR,'profile-home');
   const cache=process.env.CLAUDE_LOCAL_PROJECTS_CLI_CACHE||path.join(profileHome,'Library/Application Support/Claude/claude-code');
   const runner=createProjectRunner({directory:path.join(directory,'execution'),binary:()=>findProjectCLI(cache),clientKey,profileHome,
+    routing:()=>({models:hot.current.models,smallModel:hot.current.smallModel}),
     baseUrl:()=>`http://127.0.0.1:${process.env.CLAUDE_LOCAL_PUBLIC_PROXY_PORT||listeningPort}`});
   runner.available=()=>!!findProjectCLI(cache);
   localProjects=createLocalProjects({directory,accountId:ACCOUNT.uuid,models:()=>hot.current,clientKey,runner,
