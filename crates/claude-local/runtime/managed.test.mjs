@@ -528,13 +528,21 @@ test("upstream fetches share a bounded, reused connection pool through the upstr
   });
   upstreamProxy.listen(0, "127.0.0.1");
   await once(upstreamProxy, "listening");
+  const poolRuntime = path.join(root, "pool-runtime");
+  fs.cpSync(path.join(root, "runtime"), poolRuntime, { recursive: true });
+  fs.writeFileSync(path.join(poolRuntime, "mock", ".codex-plus-template"), "");
+  fs.writeFileSync(path.join(poolRuntime, "mock", "bootstrap.json"), JSON.stringify({
+    gated_imports_build_id: "pool-build", gated_imports: {},
+  }));
+  fs.writeFileSync(path.join(poolRuntime, "mock", "shell.html"),
+    `<!doctype html><html data-build-id="pool-build"><head></head><body>${"p".repeat(5000)}</body></html>`);
   const instance = await start({
     CLAUDE_LOCAL_CACHE_DIR: path.join(root, "pool-cache"),
     CLAUDE_LOCAL_UPSTREAM_PROXY: `http://127.0.0.1:${upstreamProxy.address().port}`,
     NODE_EXTRA_CA_CERTS: path.join(here, "ca/ca.pem"),
-  });
+  }, poolRuntime);
   try {
-    // 本机资源包里没有的 CDN 资源会转发上游。
+    // 录制版的 CDN 资源走上游；安装包界面只读它自己的资源。
     const fetchAsset = (name) => request(instance, `/claude-ai/v2/assets/v1/${name}.js`, { host: "assets-proxy.anthropic.com" });
     const burst = await Promise.all(Array.from({ length: 60 }, (_, i) => fetchAsset(`burst-${i}`)));
     for (const [i, response] of burst.entries()) {

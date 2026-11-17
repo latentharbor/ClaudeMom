@@ -23,6 +23,7 @@ jobs:
           bash scripts/gen-ca.sh
           node --test --test-timeout=120000 managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs scripts/*.test.mjs
       - name: Frontend settings contract
+        if: ${{ !cancelled() }}
         working-directory: apps/claude-mom
         run: |
           npm ci
@@ -30,6 +31,9 @@ jobs:
           npm test
           npm run vite:build
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !cancelled() }}
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !cancelled() }}
       - name: Settings persistence and runtime packaging
+        if: ${{ !cancelled() }}
         run: cargo test -p claude-local

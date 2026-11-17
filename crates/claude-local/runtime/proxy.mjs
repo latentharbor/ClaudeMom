@@ -2174,6 +2174,7 @@ function handle(req, res, hostHeader) {
     MODE === "mock" &&
     isMainClaudeHost &&
     req.method === "GET" &&
+    !["/", "/login", "/app-unavailable-in-region"].includes(url.pathname) &&
     !path.extname(url.pathname) &&
     !/^\/(?:api|edge-api|v1|claudeai-rpc)(?:\/|$)/.test(url.pathname)
   ) {
