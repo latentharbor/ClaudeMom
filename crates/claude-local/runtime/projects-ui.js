@@ -49,6 +49,7 @@
         if(thread.branch)row.append(node('p',`${thread.branch} · ${(thread.base_commit||'').slice(0,8)}`));
         const latest=state.jobs.filter(j=>j.thread_root_id===thread.id).at(-1);
         if(latest?.error)row.append(node('p',latest.error,{'data-task-error':''}));
+        if(latest?.state==='running'&&!latest.sandbox?.required)row.append(node('p','旧版任务尚无进程沙箱保护；请先停止旧任务，再启动新的 Projects 任务。',{'data-task-error':''}));
         content.append(row);
       }
     }

@@ -8,9 +8,24 @@ import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {projectSandbox,sandboxCommand,ProjectSandboxError} from './projects-sandbox.mjs';
+import {createProjectRunner} from './projects-runner.mjs';
 
 test('Sandbox is required on unsupported platforms',()=>{
   assert.throws(()=>projectSandbox({platform:'linux'}),e=>e instanceof ProjectSandboxError&&e.code==='project_sandbox_unavailable');
+});
+
+test('recovery waits for an unsandboxed legacy actor and refuses to launch new work',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'legacy-project-')),job=path.join(root,'job');fs.mkdirSync(job);
+  fs.writeFileSync(path.join(job,'status.json'),JSON.stringify({state:'running'}));
+  const runner=createProjectRunner({directory:root});let delivered;
+  try{
+    runner.observe(job,value=>{delivered=value;});
+    assert.throws(()=>runner.run({}),e=>e instanceof ProjectSandboxError&&/legacy/i.test(e.message));
+    assert.equal(delivered,undefined,'an existing task is not silently relabelled or killed');
+    fs.writeFileSync(path.join(job,'status.json'),JSON.stringify({state:'cancelled'}));
+    for(let n=0;n<30&&!delivered;n++)await new Promise(r=>setTimeout(r,30));
+    assert.equal(delivered?.state,'cancelled');assert.equal(runner.active(),0);
+  }finally{runner.close();fs.rmSync(root,{recursive:true,force:true});}
 });
 
 test('full process and MCP-like child cannot escape filesystem, IPC or broker boundaries',{skip:process.platform!=='darwin',timeout:30000},async()=>{

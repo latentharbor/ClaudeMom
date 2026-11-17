@@ -9,7 +9,7 @@ const here=path.dirname(fileURLToPath(import.meta.url));
 const privateJSON=(file,value)=>fs.writeFileSync(file,JSON.stringify(value),{mode:0o600});
 export function createProjectRunner({directory,binary,baseUrl,clientKey,profileHome,onActiveChange=()=>{}}) {
   fs.mkdirSync(directory,{recursive:true,mode:0o700});
-  const active=new Map();let closed=false;
+  const active=new Map(),legacy=new Set();let closed=false;
   const count=()=>onActiveChange(active.size);
   function environment(configDir,tmp) {
     // In particular, do not pass CI tokens, upstream credentials, personal CLI
@@ -28,14 +28,16 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     const check=()=>{
       if(closed)return;
       let value;try{value=JSON.parse(fs.readFileSync(path.join(jobDir,'status.json')));}catch{return;}
+      if(value.state==='running'&&value.sandbox?.enforced!==true)legacy.add(jobDir);
       if(!['completed','failed','cancelled'].includes(value.state))return;
-      clearInterval(timer);active.delete(jobDir);count();settle(value);
+      clearInterval(timer);active.delete(jobDir);legacy.delete(jobDir);count();settle(value);
     };
     timer=setInterval(check,300);timer.unref();active.set(jobDir,timer);count();check();
   }
   function run({projectId,prompt,model,effort='low',sessionId=crypto.randomUUID(),resume=false,role='worker',
     lane='coordinator',jobId=crypto.randomUUID(),toolToken,library=[],onPrepared=()=>{},workspace}) {
     if(closed)throw Error('Project runner closed');
+    if(legacy.size)throw new ProjectSandboxError('A legacy Projects task has no process Sandbox. Stop it before starting new tasks.');
     if(process.platform!=='darwin'||!fs.existsSync('/usr/bin/sandbox-exec'))throw new ProjectSandboxError('The required macOS process Sandbox is unavailable; execution was blocked');
     if(!/^chan_[A-Za-z0-9_-]{1,120}$/.test(projectId)||typeof prompt!=='string'||prompt.length>200000)throw Error('Invalid local project job');
     if(typeof model!=='string'||!model||model.startsWith('-')||model.length>500)throw Error('Invalid project model');
@@ -92,5 +94,5 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     return{id,sessionId,directory:jobDir,workspace:cwd,done};
   }
   return{run,observe,cancel(jobDir,token){privateJSON(path.join(jobDir,'cancel.json'),{token});},active:()=>active.size,
-    close(){closed=true;for(const timer of active.values())clearInterval(timer);active.clear();}};
+    close(){closed=true;for(const timer of active.values())clearInterval(timer);active.clear();legacy.clear();}};
 }

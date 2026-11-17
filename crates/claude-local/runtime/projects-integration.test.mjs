@@ -68,6 +68,10 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     assert.equal(fs.readFileSync(path.join(workspace(allow.id),'ALLOW_TOOL.txt'),'utf8'),'ALLOW_TOOL');
     assert.equal(fs.existsSync(path.join(workspace(deny.id),'DENY_TOOL.txt')),false);
     assert.deepEqual([...readMarkers].sort(),['ALLOW_TOOL','DENY_TOOL']);
+    const produced=backend.snapshot().files.find(f=>f.path.endsWith('/ALLOW_TOOL.txt'));
+    assert.ok(produced,'the sandboxed collector actually exports the completed worktree file');
+    assert.equal(Buffer.from(produced.content,'base64').toString(),'ALLOW_TOOL');
+    assert.ok(backend.snapshot().jobs.every(j=>j.sandbox?.required===true&&j.sandbox?.enforced===true));
     const cancel=(await request(base+'/threads','POST',{title:'Cancel',prompt:'CANCEL_TOOL'})).thread;
     await until(()=>backend.snapshot().permissions.some(p=>p.thread_id===cancel.id&&p.state==='pending'));
     await request(base+'/threads/'+cancel.id+'/cancel','POST',{});

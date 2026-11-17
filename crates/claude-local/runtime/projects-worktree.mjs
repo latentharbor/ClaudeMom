@@ -6,7 +6,7 @@ import {spawnSync} from 'node:child_process';
 
 function git(directory,args,required=true) {
   const result=spawnSync('git',['-c','core.hooksPath=/dev/null','-C',directory,...args],{encoding:'utf8',timeout:30000,
-    env:{...process.env,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}});
+    env:{...process.env,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0'}});
   if(required&&result.status!==0)throw Error('Local project Git operation failed: '+(result.stderr||result.error?.message||'unknown error').slice(0,600));
   return result.status===0?(args.includes('-z')?result.stdout:result.stdout.trim()):null;
 }
@@ -38,7 +38,7 @@ export function ensureManagedRepository(directory) {
   return directory;
 }
 export function changedFiles(directory) {
-  const tracked=git(directory,['diff','--name-only','-z','HEAD'],false)||'',untracked=git(directory,['ls-files','--others','--exclude-standard','-z'],false)||'';
+  const tracked=git(directory,['diff','--no-ext-diff','--no-textconv','--name-only','-z','HEAD'],false)||'',untracked=git(directory,['ls-files','--others','--exclude-standard','-z'],false)||'';
   return [...new Set((tracked+'\0'+untracked).split('\0').filter(Boolean))].filter(name=>!name.split('/').some(p=>['.git','.claudemom-library','node_modules'].includes(p))).slice(0,1000);
 }
 export function repositoryInfo(directory) {

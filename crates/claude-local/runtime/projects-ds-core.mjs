@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import {ProjectEngine} from './third-party/ds-project/engine.js';
 import {libraryRoot,within,relativeName,importLibraryFile,libraryAction} from './third-party/ds-project/library.js';
 import {memoryFiles,readMemory,saveMemory,usageView} from './third-party/ds-project/settings.js';
-import {createThreadWorktree,ensureManagedRepository,changedFiles,repositoryInfo} from './projects-worktree.mjs';
+import {createThreadWorktree,ensureManagedRepository,repositoryInfo} from './projects-worktree.mjs';
 import {channelId,messageId,rawUUID,stableUUID,externalFileId,memoryId,sha,privateJSON,sourcePins} from './projects-protocol.mjs';
 
 const now=()=>new Date().toISOString();
@@ -204,6 +204,8 @@ export class LocalDSProjects {
   importFile(p,name,content,{overwrite=false,sourceFileId}={}) {
     name=relativeName(name);const bytes=Buffer.from(content,'base64');if(bytes.toString('base64')!==content||bytes.length>8*1024*1024)throw Error('Invalid Library content');
     const found=p.files.find(f=>(f.relativePath||f.name)===name);
+    if(!found||overwrite){const current=this.files(p).filter(f=>!f.is_directory),existing=current.find(f=>f.path===name);
+      if(current.reduce((n,f)=>n+f.size_bytes,0)+bytes.length-(existing?.size_bytes||0)>24*1024*1024)throw Error('Project Library capacity reached');}
     let file;if(found){if(!overwrite)return{path:name,error_reason:'already_exists'};
       const target=within(libraryRoot(p),name),temporary=target+'.'+crypto.randomUUID()+'.next';fs.writeFileSync(temporary,bytes,{mode:0o600});fs.renameSync(temporary,target);file=found;file.size=bytes.length;delete file.content;
       if(!sourceFileId){delete file.sourceFileId;file.id=crypto.randomUUID();}
