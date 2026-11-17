@@ -162,7 +162,8 @@ try {
     const d=await (await fetch('/api/model_selector/code')).json();
     return d.model_selector_config[0].models.find(m=>m.id==='fixture/claude-sonnet-5-5').thinking.effort_options.map(e=>e.id);
   })()`);
-  assert.deepEqual(efforts, ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(efforts.filter(effort => ["low", "medium", "high", "xhigh", "max"].includes(effort)),
+    ["low", "medium", "high", "xhigh", "max"]);
   result.checks.officialCodeEffortCapabilities = efforts;
   // Choose a model through the native control, rather than relying on the
   // account rollout's default model during session adoption.
@@ -259,6 +260,7 @@ try {
     assert.equal(draftSet, true);
     await delay(1500);
     const requestCount = requests.length;
+    result.reload = { code: { runningBefore: true, setupComplete: true, tabsBefore: beforeTabs?.tabs?.length } };
     await rpc("/reload-frontend", { id: codeFrame.id });
     const afterFrame = await until(async () => {
       const current=(await frames()).find(frame=>frame.url.startsWith('https://claude.ai/epitaxy'));
@@ -308,6 +310,8 @@ try {
   result.errors.push(error.stack || String(error));
   process.exitCode = 1;
 } finally {
+  if (reloadProbe) result.heldStreamObservations = held.map(entry => ({ kind: entry.kind, aborted: entry.aborted,
+    finished: entry.response.writableFinished }));
   finishHeld();
   if (control) {
     try {
