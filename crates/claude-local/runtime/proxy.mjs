@@ -973,6 +973,16 @@ function resolvedBootstrap() {
       let hash=0;for(const character of name)hash=(Math.imul(hash,31)+character.charCodeAt(0))|0;
       result.org_growthbook.features[String(hash>>>0)]={defaultValue:true};
     }
+    // The create dialog deliberately stays disabled without its privacy copy.
+    // Supply descriptions of OUR backend, not fabricated official cloud or
+    // collaboration grants. This is API catalog data, not a forced DOM click.
+    const chinese=String(result.gated_messages?.locale||result.locale||'').startsWith('zh');
+    const messages={...(result.gated_messages?.messages||{}),
+      'secret:tv3jag':chinese?'项目资料和会话保存在本机，由本地执行器处理。':'Project data and conversations stay on this device and use a local executor.',
+      ...Object.fromEntries(['r0e84','1m27w9y'].map(id=>['secret:'+id,chinese?
+        '此本地后端暂不支持共享项目。':'Shared projects are not supported by this local backend.']))};
+    result.gated_messages={...result.gated_messages,messages,partial:false,
+      gates:[...new Set([...(result.gated_messages?.gates||[]),'amber_tributary_heron','amber_tributary_osprey'])]};
   }
   // Remove the experimental home only after choosing the final manifest.
   if (!runtime.hubHome) useClassicHome(result, template);

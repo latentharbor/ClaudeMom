@@ -144,6 +144,7 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
       if(method==='POST') {
         const input=await body(req),name=text(input.name,200);
         if(!name)return json(res,{error:{type:'invalid_request_error',message:'Project name is required'}},400);
+        if(input.visibility&&input.visibility!=='private')return json(res,{error:{message:'The local backend currently supports private projects only'}},400);
         if(data.channels.length>=100)return json(res,{error:{message:'Local project limit reached'}},409);
         const channel={id:id('chan_'),name,topic:text(input.topic,2000),visibility:'private',created_at:now(),updated_at:now(),
           created_by_account_id:accountId,creator_account_id:accountId,member_count:1,members_truncated:false,
