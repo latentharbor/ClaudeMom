@@ -1101,6 +1101,19 @@ test("organization browser capability does not fall through to an empty response
   assert.deepEqual(consent.json, { allowAllBrowserSites: false });
 });
 
+test('native idle reporting requires the private frame token and exact application origin', async () => {
+  const route = '/__codex_plus/runtime-state';
+  const state = await request(service, route, { host: 'claude.ai' });
+  const body = { schema: 1, active: [], idle: true, draft: false, toolsReady: true };
+  for (const extraHeaders of [{}, { origin: 'https://example.com', 'x-claudemom-runtime-token': state.json.token },
+    { origin: 'https://claude.ai', 'x-claudemom-runtime-token': 'wrong' }]) {
+    assert.equal((await request(service, route, { host: 'claude.ai', body, extraHeaders })).status, 403);
+  }
+  const extraHeaders = { origin: 'https://claude.ai', 'x-claudemom-runtime-token': state.json.token };
+  assert.equal((await request(service, route, { host: 'claude.ai', body, extraHeaders })).status, 200);
+  assert.equal((await request(service, route, { host: 'claude.ai', body: { ...body, active: ['invalid/id'] }, extraHeaders })).status, 400);
+});
+
 test('desktop extension policy has complete verdicts and a truthful local source', async () => {
   const body = { extensions: { 'fixture.extension': { extension_id: 'fixture.extension', manifest: { name: 'Owned fixture' } } } };
   const route = '/api/organizations/local/dxt/can_install';

@@ -27,6 +27,7 @@ test('stable listener survives its GUI pipe; idle barrier, queued handoff and ro
     let active=0,pendingRevision,busy=false;
     const health=()=>process.send({type:'health',health:{port:server.address().port,activeInference:active,activeDictation:0,configHash:process.env.CLAUDE_LOCAL_CONFIG_REVISION}});
     const server=http.createServer((req,res)=>{
+      if(req.url==='/crash'){fs.closeSync(lock);fs.unlinkSync(file);res.end('crash');setTimeout(()=>process.exit(2),10);return;}
       if(req.url==='/busy'||req.url==='/idle'){
         busy=req.url==='/busy';
         process.send({type:'tasks',idle:!busy,active:busy?1:0,draft:false,toolsReady:true,preparedRevision:pendingRevision});
@@ -86,6 +87,11 @@ test('stable listener survives its GUI pipe; idle barrier, queued handoff and ro
     fs.writeFileSync(path.join(root, 'service-config.json'), '{}', { mode: 0o600 });
     await delay(700);
     assert.equal(await get('/model'), 'third', 'malformed candidate leaves the current core intact');
+    const stable = await health();
+    await get('/crash');
+    await until(async () => { const h=await health(); return h.workerPid!==stable.workerPid && h.configHash===hash('c'); });
+    assert.equal((await health()).pid, stable.pid);
+    assert.equal(await get('/model'), 'third', 'new work can resume after core recovery; old inference was not replayed');
   } catch (error) { throw Error(`${error.message}\n${output}`); }
   finally {
     fs.writeFileSync(path.join(root, 'service-stop.json'), JSON.stringify({ instanceId: 'fixture' }), { mode: 0o600 });
