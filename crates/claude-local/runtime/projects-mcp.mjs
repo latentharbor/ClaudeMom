@@ -1,6 +1,8 @@
 // MCP is a separate process, so an outstanding permission request survives
 // frontend reloads and compatibility-core replacement. No upstream key is used.
 import readline from 'node:readline';
+import fs from 'node:fs';
+import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {coordinatorTools} from './third-party/ds-project/coordinator.js';
 
@@ -31,6 +33,16 @@ const tools=[
   {name:'project_publish_file',description:'DS Project: publish a real worktree file into the project Library.',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}},
 ];
 async function call(name,input,requestId) {
+  if(name==='project_publish_file'){
+    // Read model-selected files here, inside the inherited OS Sandbox. Sending
+    // bytes avoids a privileged host read and symlink-race export bypass.
+    const root=fs.realpathSync(process.env.LOCAL_PROJECT_WORKSPACE),file=fs.realpathSync(path.resolve(root,String(input.path||'')));
+    if(!file.startsWith(root+path.sep))throw Error('The output must belong to this task worktree');
+    const fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+    try{const stat=fs.fstatSync(fd);if(!stat.isFile()||stat.nlink!==1||stat.size>500000)throw Error('Publish a regular text file of up to 500 KB, without hard links');
+      const bytes=fs.readFileSync(fd);if(bytes.includes(0))throw Error('Publish a text file');input={path:path.relative(root,file),content:bytes.toString('base64')};}
+    finally{fs.closeSync(fd);}
+  }
   const route=`${origin}/__codex_plus/projects-lab/jobs/${job}/tools`;
   let response;
   for(let attempt=0;attempt<60;attempt++) {

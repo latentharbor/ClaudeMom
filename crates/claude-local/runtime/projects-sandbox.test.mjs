@@ -34,6 +34,7 @@ test('full process and MCP-like child cannot escape filesystem, IPC or broker bo
     fs.writeFileSync('owned.txt','ok');r.ownWrite=true;r.ownRead=fs.readFileSync('owned.txt','utf8')==='ok';
     r.privateRead=blocked(()=>fs.readFileSync(${JSON.stringify(secret)}));r.otherHistory=blocked(()=>fs.readFileSync(${JSON.stringify(otherHistory)}));
     r.symlinkRead=blocked(()=>fs.readFileSync('escape-link'));r.outsideWrite=blocked(()=>fs.writeFileSync(${JSON.stringify(secret)},'bad'));
+    r.hardlinkRead=blocked(()=>{fs.linkSync(${JSON.stringify(secret)},'escape-hardlink');fs.readFileSync('escape-hardlink');});
     r.controlWrite=blocked(()=>fs.writeFileSync(${JSON.stringify(profileFile)},'bad'));
     r.libraryRead=fs.readFileSync('.claudemom-library/reference','utf8')==='READ_ONLY';r.libraryWrite=blocked(()=>fs.writeFileSync('.claudemom-library/reference','bad'));
     r.gitWrite=blocked(()=>fs.writeFileSync('.git','bad'));r.mcpConfig=fs.readFileSync(${JSON.stringify(mcpFile)},'utf8')==='{}';
@@ -49,7 +50,7 @@ test('full process and MCP-like child cannot escape filesystem, IPC or broker bo
     const command=sandboxCommand(plan,profileFile,process.execPath,['-e',code]);
     const actor=spawn(command.command,command.args,{cwd:dirs.workspace,env:{PATH:'/usr/bin:/bin',TMPDIR:dirs.tmp},stdio:['ignore','pipe','pipe']});
     let out='',err='';actor.stdout.on('data',p=>out+=p);actor.stderr.on('data',p=>err+=p);const [status,signal]=await once(actor,'close');
-    assert.equal(status,0,err+' signal='+signal);const checks=JSON.parse(out);assert.equal(Object.keys(checks).length,16);
+    assert.equal(status,0,err+' signal='+signal);const checks=JSON.parse(out);assert.equal(Object.keys(checks).length,17);
     for(const [name,value]of Object.entries(checks))assert.equal(value,true,name);assert.equal(otherHits,0);
     assert.equal(fs.readFileSync(secret,'utf8'),'PRIVATE_SENTINEL');
     assert.throws(()=>sandboxCommand(plan,path.join(root,'missing.sb'),process.execPath,['-e','process.exit(0)']),ProjectSandboxError,'invalid sandbox never starts an unrestricted actor');

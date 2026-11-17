@@ -57,7 +57,7 @@ test('parallel lanes, durable approval, deny and queued follow-up survive a core
   assert.equal((await f.request(tool+'/'+permission.body.id,'GET',undefined,job.tool_token)).body.state,'denied');
   assert.equal((await f.request(base+'/permissions/'+permission.body.id,'POST',{decision:'allow'})).status,409);
   fs.writeFileSync(path.join(nativeThreads.find(t=>t.id===first.id).working_directory,'owned-output.txt'),'DS Project output');
-  f.hosts.get(job.id).complete({state:'completed',result:'First result'});
+  f.hosts.get(job.id).complete({state:'completed',result:'First result',artifacts:[{path:'owned-output.txt',content:Buffer.from('DS Project output').toString('base64')}]});
   await until(()=>f.hosts.size===3);
   assert.ok(f.backend.snapshot().files.some(f=>f.kind==='output'&&f.path.endsWith('owned-output.txt')));
   assert.equal([...f.hosts.values()].at(-1).options.resume,true);

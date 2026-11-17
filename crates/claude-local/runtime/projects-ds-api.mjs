@@ -149,7 +149,12 @@ export function createLocalProjects(options) {
       }
       case 'project_finish_task':value=core.engine.finish(t.sessionId,input.summary,input.needs_input,input.resolved);break;
       case 'project_publish_file': {
-        value=core.engine.publish(t.sessionId,input.path);value.source={...value.source,jobId:job.id};core.engine.store.save();break;
+        const name=validPath(input.path);
+        if(typeof input.content!=='string'||input.content.length>Math.ceil(500000/3)*4)throw Error('A bounded output from the sandboxed MCP is required');
+        const raw=Buffer.from(input.content,'base64');if(raw.toString('base64')!==input.content||raw.includes(0))throw Error('Invalid text output');
+        const target=`Artifacts/${sha(job.id+':'+name+':'+sha(raw)).slice(0,12)}-${path.basename(name)}`;
+        core.importFile(p,target,input.content);const file=p.files.find(f=>f.relativePath===target);
+        Object.assign(file,{kind:'output',source:{threadId:t.id,title:t.title,path:name,jobId:job.id}});core.engine.store.save();value=file;break;
       }
       case 'create_schedule':value=createSchedule(p,input);break;
       case 'list_schedules':value={schedules:core.meta.schedules.filter(s=>s.channel_id===job.channel_id)};break;

@@ -126,7 +126,7 @@ export class LocalDSProjects {
     this.save();this.observing.delete(id);
     const seq=job.ds_seq_base||0;
     if(result.result&&(!t.lastEventSeq||t.lastEventSeq<seq+1))this.engine.onEvent(t.sessionId,{seq:seq+1,type:'assistant/message',data:{message:{content:[{type:'text',text:result.result}]}}});
-    if(result.state==='completed')this.collectArtifacts(t,job);
+    if(result.state==='completed')this.collectArtifacts(t,job,result.artifacts||[],result.artifact_errors||[]);
     if(t.kind!=='main'&&result.state==='completed'&&!t.outcome)this.engine.finish(t.sessionId,(result.result?.trim()||'Task completed.').slice(0,12000));
     if(!t.lastEventSeq||t.lastEventSeq<seq+2)this.engine.onEvent(t.sessionId,{seq:seq+2,type:'turn/end',data:{reason:{
       kind:result.state==='completed'?'completed':result.state==='cancelled'?'aborted':'error',message:result.error||'Local execution failed'}}});
@@ -210,14 +210,15 @@ export class LocalDSProjects {
     }else file=importLibraryFile(this.engine.store,p,name,content);
     if(sourceFileId)file.sourceFileId=sourceFileId;this.engine.store.save();const entry=this.files(p).find(f=>f.path===name);return{path:name,content_sha256:entry.content_sha256,entry};
   }
-  collectArtifacts(t,job) {
+  collectArtifacts(t,job,files,errors=[]) {
     if(t.kind==='main'||!t.worktree)return;
-    const p=this.engine.store.project(t.projectId);for(const name of changedFiles(t.cwd))try{
-      const file=within(t.cwd,name),stat=fs.statSync(file);if(!stat.isFile()||stat.size>8*1024*1024)continue;
+    const p=this.engine.store.project(t.projectId);for(const file of files)try{
+      const name=relativeName(file.path);
       const target=`Artifacts/${messageId(t.id).slice(0,18)}/${job.id.slice(0,8)}/${name}`;
-      let entry=p.files.find(f=>f.relativePath===target);if(!entry){this.importFile(p,target,fs.readFileSync(file).toString('base64'));entry=p.files.find(f=>f.relativePath===target);}
+      let entry=p.files.find(f=>f.relativePath===target);if(!entry){this.importFile(p,target,file.content);entry=p.files.find(f=>f.relativePath===target);}
       Object.assign(entry,{kind:'output',source:{threadId:messageId(t.id),title:t.title,path:name,jobId:job.id}});
-    }catch(error){(job.artifact_errors||=[]).push({path:name,error:error.message});}this.engine.store.save();
+    }catch(error){(job.artifact_errors||=[]).push({path:file.path,error:error.message});}
+    if(errors.length)(job.artifact_errors||=[]).push(...errors);this.engine.store.save();
   }
   memory(p){return memoryFiles(p).map(f=>({id:memoryId(p.id,f.name),path:'/'+f.name,size_bytes:f.size,
     content:readMemory(p,f.name).content,content_sha256:sha(readMemory(p,f.name).content)}));}

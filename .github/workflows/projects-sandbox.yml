@@ -22,10 +22,12 @@ jobs:
       - name: Sandbox startup diagnostics
         if: failure()
         run: |
+          sleep 2
+          sudo /usr/bin/log show --last 2m --style compact --predicate 'eventMessage CONTAINS "ClaudeMom-Project-Sandbox" OR eventMessage CONTAINS "Sandbox: true"' | tail -70
           python3 - <<'PY'
           import pathlib, json
-          home = pathlib.Path.home() / 'Library/Logs/DiagnosticReports'
-          for p in sorted(home.glob('*.ips'), key=lambda p:p.stat().st_mtime, reverse=True)[:5]:
+          paths=list((pathlib.Path.home() / 'Library/Logs/DiagnosticReports').glob('*.ips'))+list(pathlib.Path('/Library/Logs/DiagnosticReports').glob('*.ips'))
+          for p in sorted(paths, key=lambda p:p.stat().st_mtime, reverse=True)[:8]:
               if p.name.startswith(('true-', 'node-', 'claude-')):
                   text=p.read_text()
                   try:

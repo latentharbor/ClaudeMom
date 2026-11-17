@@ -42,7 +42,7 @@ export function projectSandbox({workspace,configDir,tmp,sockets,binary,nodeBinar
   let bundle=path.dirname(executable);while(bundle!==path.dirname(bundle)&&!bundle.endsWith('.app'))bundle=path.dirname(bundle);
   const readable=[...systemReads(),...writable,runtime,...gitMetadata(workspace)];
   if(bundle.endsWith('.app'))readable.push(bundle);
-  const profile=['(version 1)','(deny default)',
+  const profile=['(version 1)','(deny default (with message "ClaudeMom-Project-Sandbox"))',
     '(allow process-exec process-fork)',
     '(allow process-info* signal mach-priv-task-port (target same-sandbox))',
     '(allow user-preference-read)',
@@ -61,6 +61,7 @@ export function projectSandbox({workspace,configDir,tmp,sockets,binary,nodeBinar
     '  (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.system.opendirectoryd.membership")',
     '  (global-name "com.apple.bsd.dirhelper"))',
     '(allow file-read-metadata)',
+    '(allow file-read* (literal "/"))',
     `(allow file-read* ${[...new Set(readable)].map(sub).join(' ')} ${[executable,node,mcp,'/dev/null','/dev/zero','/dev/random','/dev/urandom','/dev/tty'].map(literal).join(' ')} (subpath "/dev/fd"))`,
     `(allow file-write* ${writable.map(sub).join(' ')} (literal "/dev/null") (subpath "/dev/fd"))`,
     // A read-only snapshot and host-owned Git linkage stay read-only even
