@@ -798,7 +798,7 @@ test("clean managed runtime uses synthetic bootstrap and configured catalogs wit
     assert.equal(result.json.account.email_address, "local@claude.local");
     assert.equal(result.json.locale, "zh-Hans");
     assert.deepEqual(result.json.gated_imports, { "fixture-ui": { hash: "fixture-lazy", css: [], preload: [] } });
-    assert.deepEqual(result.json.current_user_access.features, []);
+    assert.deepEqual(result.json.current_user_access.features, [{ feature: "cowork_browser_pane", status: "available" }]);
     assert.equal(result.json.activeOrganization.uuid, result.json.resolved_org_uuid);
     assert.equal(result.json.activeOrganization.uuid, result.json.account.organization_uuid);
     assert.equal(result.json.account.memberships[0].organization.uuid, result.json.activeOrganization.uuid);
@@ -1077,6 +1077,27 @@ test("organization browser capability does not fall through to an empty response
   // independent Code launch toggle or other tools' permission modes.
   const consent = await request(service, "/__codex_plus/browser-site-consent.json", { host: "claude.ai" });
   assert.deepEqual(consent.json, { allowAllBrowserSites: false });
+});
+
+test("local browser availability does not inherit a recording account's tier restriction", async () => {
+  const dir = path.join(root, "browser-access-runtime");
+  fs.cpSync(path.join(root, "runtime"), dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "mock", ".codex-plus-template"), "");
+  fs.writeFileSync(path.join(dir, "mock", "bootstrap.json"), JSON.stringify({ current_user_access: { features: [
+    { feature: "cowork_browser_pane", status: "blocked_by_org_tier" },
+    { feature: "unrelated_capability", status: "blocked_by_org_admin" },
+  ] } }));
+  const instance = await start({ CLAUDE_LOCAL_CACHE_DIR: path.join(dir, ".cache") }, dir);
+  try {
+    for (const endpoint of ["/edge-api/bootstrap", "/api/bootstrap/local/current_user_access"]) {
+      const result = await request(instance, endpoint, { host: "claude.ai" });
+      const access = result.json.current_user_access ?? result.json;
+      assert.deepEqual(access.features, [
+        { feature: "unrelated_capability", status: "blocked_by_org_admin" },
+        { feature: "cowork_browser_pane", status: "available" },
+      ]);
+    }
+  } finally { await stop(instance); }
 });
 
 test("settled and previously saved messages retain the collections used by transcript rows", async () => {

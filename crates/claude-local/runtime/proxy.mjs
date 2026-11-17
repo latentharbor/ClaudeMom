@@ -661,6 +661,7 @@ function normalizeLocalIdentity(source = {}) {
     org_uuid: ORG.uuid,
     active_org_uuid: ORG.uuid,
     organization_uuid: ORG.uuid,
+    current_user_access: normalizeBrowserAccess(payload.current_user_access ?? localUserAccess()),
     locale: runtime.localization ? "zh-Hans" : (payload.locale || "en-US"),
   };
 }
@@ -696,6 +697,16 @@ function localUserAccess() {
     artifacts_setting_blocks_classic_sharing: false,
     classic_sharing_block_reason: null,
   };
+}
+
+function normalizeBrowserAccess(access) {
+  // Recorded organization-tier restrictions belong to the recording account,
+  // not this local browser. Keep all other feature policies unchanged. The
+  // Code launch toggle, local managed policy and site/action gates still apply.
+  return { ...access, features: [
+    ...(Array.isArray(access.features) ? access.features : []).filter(feature => feature?.feature !== "cowork_browser_pane"),
+    { feature: "cowork_browser_pane", status: "available" },
+  ] };
 }
 
 function localBootstrap() {
@@ -1351,7 +1362,7 @@ function mockApi(req, res, url) {
       try { base = JSON.parse(fs.readFileSync(path.join(POC_MOCK, "bootstrap.json"), "utf8")).current_user_access ?? base; } catch {}
     }
     return jsonWithActiveOrg(res, {
-      ...base,
+      ...normalizeBrowserAccess(base),
       has_access: true,
       can_access: true,
       status: "allowed",
