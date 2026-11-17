@@ -29,6 +29,7 @@ test('ClaudeLift upload IDs, source-file linking, pagination and memory precondi
   const write=await request(route+'/files:write','POST',{files:[{path:'docs/owned.bin',source_file_id:fileID}]});
   assert.equal(write.status,200);assert.equal(write.body.results[0].entry.file_id,fileID);
   assert.deepEqual(Buffer.from((await request(route+'/files:open','POST',{path:'docs/owned.bin'})).body.data,'base64'),Buffer.from([0,1,2,250,251,252]));
+  assert.deepEqual(Buffer.from((await request(route+'/attachments/'+fileID+'/content')).body.data,'base64'),Buffer.from([0,1,2,250,251,252]));
   assert.equal((await request(route+'/files:list','POST',{limit:501})).status,400);
   const first=(await request(route+'/files:list','POST',{recursive:true,limit:1})).body;
   assert.ok(first.cursor);const next=(await request(route+'/files:list','POST',{recursive:true,limit:1,cursor:first.cursor})).body;

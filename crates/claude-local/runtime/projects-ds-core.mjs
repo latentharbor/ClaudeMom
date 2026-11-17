@@ -18,7 +18,12 @@ export class LocalDSProjects {
     let saved;try{if(fs.lstatSync(this.file).isSymbolicLink())throw Error('Invalid local metadata');saved=JSON.parse(fs.readFileSync(this.file));}catch(error){if(error.code!=='ENOENT')throw error;}
     this.meta=saved?.schema===2?saved:{schema:2,jobs:saved?.jobs||[],schedules:saved?.schedules||[],permissions:saved?.permissions||[],uploads:[],actions:[]};
     const adapter={preserveRuns:true,notifyReports:(t,p)=>this.config(p).coordinator_mode_enabled!==false,
-      create:async(t,p)=>this.createSession(t,p),attach:async()=>{},
+      create:async(t,p)=>this.createSession(t,p),attach:async t=>{
+        if(t.legacyActor&&!this.meta.jobs.some(j=>j.ds_thread_id===t.id&&j.state==='running')){
+          (t.previousSessions||=[]).push(t.sessionId);t.cliSessionId=null;t.workspaceReset=true;
+          t.sessionId=this.createSession(t,this.engine.store.project(t.projectId));delete t.legacyActor;this.engine.store.save();
+        }
+      },
       send:async(t,input,source)=>this.execute(t,input,source),
       stop:async t=>this.stopSession(t),retire:async t=>this.stopSession(t),
       usage:async id=>this.sessionUsage(id)};
@@ -59,7 +64,7 @@ export class LocalDSProjects {
     return this.engine.send(t.id,input,'user:'+key);
   }
   intent(t,input,key,options) {
-    const id=stableUUID(t.id+':'+key);let job=this.meta.jobs.find(j=>j.id===id);if(job)return job;
+    const id=stableUUID(t.id+':'+key);let job=this.meta.jobs.find(j=>j.id===id||j.ds_thread_id===t.id&&j.request_id===key);if(job)return job;
     const p=this.engine.store.project(t.projectId),settings=this.config(p);
     const dispatch=t.dispatchKey||'';
     const source=options.source?.role==='report'?'worker_event':dispatch.includes(':schedule:')?'schedule':
@@ -76,7 +81,8 @@ export class LocalDSProjects {
     if(t.kind==='main')t.cwd=path.join(root,'workspaces','coordinator');
     else {
       const repo=p.repositoryPath||ensureManagedRepository(path.join(root,'repository'));
-      const destination=path.join(root,'workspaces',messageId(t.id));
+      let destination=path.join(root,'workspaces',messageId(t.id));
+      if(fs.existsSync(destination)&&!fs.existsSync(path.join(destination,'.git'))){(t.previousWorkspaces||=[]).push(destination);destination+='-ds';}
       t.worktree=createThreadWorktree(repo,t.id,t.title,destination,p.baseCommit||'HEAD');t.cwd=t.worktree.worktreePath;
     }
     fs.mkdirSync(t.cwd,{recursive:true,mode:0o700});
@@ -87,7 +93,7 @@ export class LocalDSProjects {
     await Promise.all([...this.engine.actions.values()]);if(this.closed)return;
     const p=this.engine.store.project(t.projectId),job=this.intent(t,input,t.runningRequestId,{source});
     if(job.state!=='queued')return;
-    const isMain=t.kind==='main',previous=this.meta.jobs.findLast(j=>j.id!==job.id&&j.ds_thread_id===t.id&&j.state==='completed');
+    const isMain=t.kind==='main',previous=this.meta.jobs.findLast(j=>j.id!==job.id&&j.ds_thread_id===t.id&&j.session_id===t.sessionId&&j.state==='completed');
     let snapshot=this.engine.runtimeContext(t.sessionId);
     if(!isMain){const split=snapshot.indexOf('\n');const object=JSON.parse(snapshot.slice(split+1));object.threads=(object.threads||[]).map(({latestUser,latestAssistant,...status})=>status);snapshot=snapshot.slice(0,split+1)+JSON.stringify(object);}
     const policy=this.engine.context(t.sessionId).replace(/\b(project_[a-z_]+)\b/g,'mcp__local_project__$1')+
@@ -118,7 +124,7 @@ export class LocalDSProjects {
     const seq=job.ds_seq_base||0;
     if(result.result&&(!t.lastEventSeq||t.lastEventSeq<seq+1))this.engine.onEvent(t.sessionId,{seq:seq+1,type:'assistant/message',data:{message:{content:[{type:'text',text:result.result}]}}});
     if(result.state==='completed')this.collectArtifacts(t,job);
-    if(t.kind!=='main'&&result.state==='completed'&&!t.outcome)this.engine.finish(t.sessionId,(result.result||'Task completed.').slice(0,12000));
+    if(t.kind!=='main'&&result.state==='completed'&&!t.outcome)this.engine.finish(t.sessionId,(result.result?.trim()||'Task completed.').slice(0,12000));
     if(!t.lastEventSeq||t.lastEventSeq<seq+2)this.engine.onEvent(t.sessionId,{seq:seq+2,type:'turn/end',data:{reason:{
       kind:result.state==='completed'?'completed':result.state==='cancelled'?'aborted':'error',message:result.error||'Local execution failed'}}});
     job.delivered=true;this.save();this.onTaskFinished(job.session_id);this.changed();
@@ -132,9 +138,9 @@ export class LocalDSProjects {
       if(t.runningRequestId)requests[`send:${t.id}:${t.runningRequestId}`]={messageId:t.currentMessageId};
       const running=this.meta.jobs.find(j=>j.ds_thread_id===t.id&&j.state==='running');
       if(running&&this.runner){this.engine.active.add(t.id);t.status=this.meta.permissions.some(p=>p.job_id===running.id&&p.state==='pending')?'approval':'running';
-        this.observing.add(running.id);this.runner.observe(running.directory,result=>this.deliver(running.id,result));continue;}
+        this.observing.add(running.id);this.runner.observe(running.directory,result=>queueMicrotask(()=>void this.deliver(running.id,result)));continue;}
       const finished=this.meta.jobs.findLast(j=>j.ds_thread_id===t.id&&!busy(j.state)&&!j.delivered);
-      if(finished){this.engine.active.add(t.id);void this.deliver(finished.id,{state:finished.state,result:finished.result,usage:finished.usage});continue;}
+      if(finished){this.engine.active.add(t.id);queueMicrotask(()=>void this.deliver(finished.id,{state:finished.state,result:finished.result,usage:finished.usage}));continue;}
       const queued=this.meta.jobs.find(j=>j.ds_thread_id===t.id&&j.state==='queued');
       if(queued&&!t.pending){t.pending={text:queued.input_text,messageId:t.messages.find(m=>m.requestId===queued.request_id)?.id,
         requestId:queued.request_id,source:queued.source_metadata||{kind:'user'},previousStatus:'ready'};t.status='queued';}
@@ -197,6 +203,7 @@ export class LocalDSProjects {
     const found=p.files.find(f=>(f.relativePath||f.name)===name);
     let file;if(found){if(!overwrite)return{path:name,error_reason:'already_exists'};
       const target=within(libraryRoot(p),name),temporary=target+'.'+crypto.randomUUID()+'.next';fs.writeFileSync(temporary,bytes,{mode:0o600});fs.renameSync(temporary,target);file=found;file.size=bytes.length;delete file.content;
+      if(!sourceFileId){delete file.sourceFileId;file.id=crypto.randomUUID();}
     }else file=importLibraryFile(this.engine.store,p,name,content);
     if(sourceFileId)file.sourceFileId=sourceFileId;this.engine.store.save();const entry=this.files(p).find(f=>f.path===name);return{path:name,content_sha256:entry.content_sha256,entry};
   }
@@ -204,7 +211,7 @@ export class LocalDSProjects {
     if(t.kind==='main'||!t.worktree)return;
     const p=this.engine.store.project(t.projectId);for(const name of changedFiles(t.cwd))try{
       const file=within(t.cwd,name),stat=fs.statSync(file);if(!stat.isFile()||stat.size>8*1024*1024)continue;
-      const target=`Artifacts/${messageId(t.id).slice(0,18)}/${job.id.slice(0,8)}-${name}`;
+      const target=`Artifacts/${messageId(t.id).slice(0,18)}/${job.id.slice(0,8)}/${name}`;
       let entry=p.files.find(f=>f.relativePath===target);if(!entry){this.importFile(p,target,fs.readFileSync(file).toString('base64'));entry=p.files.find(f=>f.relativePath===target);}
       Object.assign(entry,{kind:'output',source:{threadId:messageId(t.id),title:t.title,path:name,jobId:job.id}});
     }catch(error){(job.artifact_errors||=[]).push({path:name,error:error.message});}this.engine.store.save();
@@ -218,19 +225,26 @@ export class LocalDSProjects {
   }
   close(){this.closed=true;this.runner?.close();}
   migrate(old) {
-    fs.copyFileSync(this.file,this.file+'.pre-ds-project');
+    if(!fs.existsSync(this.file+'.pre-ds-project'))fs.copyFileSync(this.file,this.file+'.pre-ds-project');
     const data=this.engine.store.data;
-    for(const channel of old.channels||[]){const id=rawUUID(channel.id,'chan_');if(data.projects.some(p=>p.id===id))continue;
+    for(const channel of old.channels||[]){const id=rawUUID(channel.id,'chan_');if(data.projects.some(p=>p.id===id&&p.bridgeMigrationComplete))continue;
       const mainId=stableUUID(channel.id+':coordinator'),cwd=path.join(this.engine.store.home,'workspaces',id);fs.mkdirSync(cwd,{recursive:true,mode:0o700});
-      const p={id,name:channel.name,description:channel.topic||'',instructions:channel.system_prompt_addendum||'',memories:[],files:[],reports:[],activities:[],createdAt:channel.created_at,
-        archived:!!channel.archived_at,cwd,mainThreadId:mainId,channelConfig:channel.settings||{},contextSources:channel.context_sources||[]};data.projects.push(p);
-      data.threads.push({id:mainId,projectId:id,title:'主对话',kind:'main',brief:'',status:'ready',messages:[],sessionId:null,createdAt:p.createdAt,updatedAt:p.createdAt,activity:'',pending:null});
-      for(const item of old.threads?.filter(t=>t.channel_id===channel.id)||[])data.threads.push({id:rawUUID(item.id,'cmsg_'),projectId:id,title:item.title,kind:'execute',brief:'',status:'ready',messages:[],sessionId:null,createdAt:item.created_at,updatedAt:item.updated_at,activity:'',pending:null});
-      for(const m of old.messages?.filter(m=>m.channel_id===channel.id)||[]){const t=m.thread_root_id?data.threads.find(t=>messageId(t.id)===m.thread_root_id):data.threads.find(t=>t.id===mainId);if(t)t.messages.push({id:rawUUID(m.id,'cmsg_'),role:m.author_account_id?'user':m.server_notice?'event':'assistant',text:m.body,at:m.created_at,admitted:true});}
+      let p=data.projects.find(p=>p.id===id);if(!p){p={id,name:channel.name,description:channel.topic||'',instructions:channel.system_prompt_addendum||'',memories:[],files:[],reports:[],activities:[],createdAt:channel.created_at,
+        archived:!!channel.archived_at,cwd,mainThreadId:mainId,channelConfig:channel.settings||{},contextSources:channel.context_sources||[]};data.projects.push(p);}
+      if(!data.threads.some(t=>t.id===mainId))data.threads.push({id:mainId,projectId:id,title:'主对话',kind:'main',brief:'',status:'ready',messages:[],sessionId:null,createdAt:p.createdAt,updatedAt:p.createdAt,activity:'',pending:null});
+      for(const item of old.threads?.filter(t=>t.channel_id===channel.id)||[])if(!data.threads.some(t=>messageId(t.id)===item.id))data.threads.push({id:rawUUID(item.id,'cmsg_'),projectId:id,title:item.title,kind:'execute',brief:old.messages.find(m=>m.id===item.id)?.body||'',status:'ready',messages:[],sessionId:null,createdAt:item.created_at,updatedAt:item.updated_at,activity:'',pending:null});
+      for(const m of old.messages?.filter(m=>m.channel_id===channel.id)||[]){const t=m.thread_root_id?data.threads.find(t=>messageId(t.id)===m.thread_root_id):data.threads.find(t=>t.id===mainId);
+        if(t&&!t.messages.some(item=>messageId(item.id)===m.id))t.messages.push({id:rawUUID(m.id,'cmsg_'),role:m.author_account_id?'user':m.server_notice?'event':'assistant',text:m.body,at:m.created_at,admitted:true,...m.client_message_id?{requestId:'user:'+m.client_message_id}:{}});}
       for(const f of old.files?.filter(f=>f.channel_id===channel.id)||[])this.importFile(p,f.path,f.content);
       for(const m of old.memories?.filter(m=>m.channel_id===channel.id)||[])this.writeMemory(p,m.path,m.content);
+      p.bridgeMigrationComplete=true;this.engine.store.save();
     }
-    for(const j of this.meta.jobs){j.ds_thread_id=j.thread_root_id?rawUUID(j.thread_root_id,'cmsg_'):stableUUID(j.channel_id+':coordinator');if(!busy(j.state))j.delivered=true;}
+    for(const j of this.meta.jobs){j.ds_thread_id=j.thread_root_id?rawUUID(j.thread_root_id,'cmsg_'):stableUUID(j.channel_id+':coordinator');
+      const input=old.messages?.find(m=>m.id===j.input_id);j.request_id=input?.client_message_id?'user:'+input.client_message_id:'legacy:'+j.id;j.input_text=input?.body||'Continue the interrupted local task.';
+      if(!busy(j.state))j.delivered=true;
+      if(j.state==='running'){const t=data.threads.find(t=>t.id===j.ds_thread_id);if(t){t.sessionId=j.session_id;t.cliSessionId=j.session_id;t.legacyActor=true;t.status='running';t.runningRequestId=j.request_id;
+        if(j.directory)t.cwd=path.join(path.dirname(path.dirname(j.directory)),'workspaces',j.thread_root_id||'coordinator');}}
+    }
     this.engine.store.save();
   }
 }

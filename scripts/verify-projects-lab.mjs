@@ -46,6 +46,19 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   await delay(2000);result.projects.created=(await inspect()).state;
   const project=saved.channels[0].id;
   const savedState=async()=>evaluate(await frontend(),`fetch('/v1/code/channels/${project}/local').then(r=>r.json())`);
+  const nativeUpload=await evaluate(await frontend(),`(async()=>{
+    const form=new FormData();form.set('file',new File(['NATIVE_LIBRARY_PROTOCOL'],'native-reference.txt',{type:'text/plain'}));
+    const uploaded=await fetch('/api/ui-lab-org/upload?store_as_is=true',{method:'POST',body:form}).then(r=>r.json());
+    const alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';let n=BigInt('0x'+uploaded.file_uuid.replaceAll('-','')),value='';
+    while(n){value=alphabet[Number(n%58n)]+value;n/=58n;}const id='file_01'+value.padStart(22,'1');
+    const result=await fetch('/v1/code/channels/${project}/files:write',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({files:[{path:'native-reference.txt',source_file_id:id}]})}).then(r=>r.json());
+    const read=await fetch('/v1/code/channels/${project}/attachments/'+id+'/content').then(r=>r.json());
+    return{linked:!!result.results?.[0]?.entry,content:atob(read.data)};
+  })()`);
+  assert.equal(nativeUpload.linked,true);assert.equal(nativeUpload.content,'NATIVE_LIBRARY_PROTOCOL');
+  result.checks.officialLibraryUploadContractInDesktop=true;
+  assert.equal((await savedState()).implementation.name,'DS Project');result.checks.dsProjectCoreActive=true;
   const sent=await evaluate(await frontend(),`fetch('/v1/code/channels/${project}/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({body:'UI_LAB_LOCAL_PROJECT_COORDINATOR',client_message_id:'cmsg_local_coordinator_fixture'})}).then(async r=>({status:r.status,body:await r.json()}))`);
   result.projects.send=sent;
   assert.equal(sent.status,200,'Local Projects must have a real execution backend');
@@ -103,6 +116,7 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   await until(async()=>(await savedState()).jobs.some(j=>j.thread_root_id===thread.id&&j.state==='completed'),60000);
   const job=(await savedState()).jobs.find(j=>j.thread_root_id===thread.id);
   const workingDirectory=(await savedState()).threads.find(t=>t.id===thread.id).working_directory;
+  assert.ok(fs.statSync(path.join(workingDirectory,'.git')).isFile());result.checks.nativeUiWorkerUsesWorktree=true;
   assert.equal(fs.readFileSync(path.join(workingDirectory,'ui-project-approved.txt'),'utf8'),'UI_PROJECT_APPROVED');
   assert.equal((await savedState()).permissions.find(p=>p.id===pending.id).state,'allowed');
   result.checks.nativeUiPermissionApprovedRealTool=true;

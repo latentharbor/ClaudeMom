@@ -16,7 +16,7 @@
     const body=await r.json();if(!r.ok)throw Error(body.error?.message||'本地项目操作失败');return body;
   }
   function showError(error){const e=root?.querySelector('[data-error]');if(e)e.textContent=error.message||String(error);}
-  function status(value){return({queued:'排队',running:'运行中',completed:'已完成',failed:'失败',cancelled:'已取消',cancelling:'正在停止'})[value]||value;}
+  function status(value){return({queued:'排队',running:'运行中',completed:'本轮完成',failed:'失败',cancelled:'已取消',cancelling:'正在停止',resolved:'已结项',waiting:'等待处理',ready:'空闲',idle:'空闲',interrupted:'已中断'})[value]||value;}
   async function refresh() {
     if(refreshing||!project)return;refreshing=true;
     try{state=await api(base()+'/local');const pending=state.permissions.filter(p=>p.state==='pending').length;
@@ -33,6 +33,9 @@
     if(tab==='threads') {
       const form=node('form',undefined,{'data-form':'thread'});field(form,'线程名称','title');field(form,'任务','prompt','textarea');
       formSubmit(form,'启动独立线程',async values=>{await api(base()+'/threads','POST',Object.fromEntries(values));form.reset();});content.append(form);
+      const repository=node('form',undefined,{'data-form':'repository'});field(repository,'项目 Git 仓库（留空使用内部仓库）','path','input',state.repository?.path||'');
+      repository.append(node('p','新线程从仓库当前提交创建独立 worktree；已有线程保留自己的工作目录，改动等待审核。'));
+      formSubmit(repository,'保存仓库设置',v=>api(base()+'/config','PATCH',{local_repository:v.get('path')}));content.append(repository);
       if(state.jobs.some(j=>['queued','running'].includes(j.state)))content.append(button('停止所有当前任务',()=>api(base()+'/cancel','POST',{}).then(refresh)));
       for(const thread of state.threads) {
         const row=node('section',undefined,{'data-thread':thread.id}),title=node('strong',thread.title),label=node('span',' · '+status(thread.state));row.append(title,label);
@@ -42,6 +45,8 @@
           formSubmit(reply,'发送',async values=>{await api(base()+'/messages','POST',{body:values.get('body'),in_reply_to_message_id:thread.id});reply.remove();});row.append(reply);
         }));
         if(['queued','running'].includes(thread.state))row.append(button('停止',()=>api(base()+'/threads/'+thread.id+'/cancel','POST',{}).then(refresh)));
+        else row.append(button(thread.ds_status==='resolved'?'重开':'结项',()=>api(base()+'/threads/'+thread.id,'PATCH',{resolved:thread.ds_status!=='resolved'}).then(refresh)));
+        if(thread.branch)row.append(node('p',`${thread.branch} · ${(thread.base_commit||'').slice(0,8)}`));
         content.append(row);
       }
     }

@@ -29,6 +29,7 @@ export function createLocalProjects(options) {
   }
   core=new LocalDSProjects({...options,onChange:changed});
   const state=p=>({channel:core.channelDTO(p),implementation:{name:'DS Project',...sourcePins},
+    repository:p.repositoryPath?{...p.repositoryInfo,path:p.repositoryPath,managed:false}:{managed:true},
     threads:core.engine.store.data.threads.filter(t=>t.projectId===p.id&&t.kind!=='main').map(t=>core.threadDTO(t)),
     messages:core.messageDTOs(p),jobs:core.meta.jobs.filter(j=>j.channel_id===channelId(p.id)).map(({tool_token,directory,input_text,source_metadata,...job})=>job),
     schedules:core.meta.schedules.filter(s=>s.channel_id===channelId(p.id)),permissions:core.meta.permissions.filter(s=>s.channel_id===channelId(p.id)),
@@ -215,10 +216,11 @@ export function createLocalProjects(options) {
     }
     if(suffix==='/local'&&method==='GET')return json(res,state(p));
     if(suffix==='/config'){
-      if(method==='PATCH'){const input=await body(req);if(typeof input.system_prompt_addendum==='string')p.instructions=input.system_prompt_addendum;
+      if(method==='PATCH'){const input=await body(req);let repo;
+        if(input.local_repository!==undefined){if(core.meta.jobs.some(j=>j.channel_id===id&&active(j)))return json(res,{error:{message:'Wait for current tasks before changing repository'}},409);repo=input.local_repository?repositoryInfo(input.local_repository):null;}
+        if(typeof input.system_prompt_addendum==='string')p.instructions=input.system_prompt_addendum;
         p.channelConfig={...core.config(p),...input.settings};if(typeof input.settings?.instructions==='string')p.instructions=input.settings.instructions;
-        if(input.local_repository!==undefined){if(core.meta.jobs.some(j=>j.channel_id===id&&active(j)))return json(res,{error:{message:'Wait for current tasks before changing repository'}},409);
-          p.repositoryPath=input.local_repository?repositoryInfo(input.local_repository).root:null;}
+        if(input.local_repository!==undefined){p.repositoryPath=repo?.root||null;p.repositoryInfo=repo;}
         core.engine.store.save();}
       return json(res,{settings:core.config(p),system_prompt_addendum:p.instructions,context_sources:p.contextSources||[],local_repository:p.repositoryPath,
         default_environment_id:'env_claudemom_local',default_source_urls:p.sourceUrls||[],memory_enabled:true});
@@ -274,6 +276,10 @@ export function createLocalProjects(options) {
     if(suffix==='/files:open'&&method==='POST'){const input=await body(req),name=validPath(input.path),raw=fs.readFileSync(within(libraryRoot(p),name));
       const offset=Number.isSafeInteger(input.range_offset)&&input.range_offset>=0?input.range_offset:0,len=Number.isSafeInteger(input.range_length)&&input.range_length>0?input.range_length:raw.length;
       const content=raw.subarray(offset,offset+len).toString('base64');return json(res,{type:'content',data:content,content,encoding:'base64',size_bytes:raw.length,content_sha256:sha(raw),path:name});}
+    const attachment=suffix.match(/^\/attachments\/(file_01[A-Za-z0-9]+)\/content$/);
+    if(attachment&&method==='GET'){const file=core.files(p).find(f=>f.file_id===attachment[1]);
+      if(!file)return json(res,{error:{message:'File version not found'}},404);
+      const raw=fs.readFileSync(within(libraryRoot(p),file.path));return json(res,{type:'content',data:raw.toString('base64'),size_bytes:raw.length,filename:path.basename(file.path)});}
     if(suffix==='/files:mkdir'&&method==='POST'){const input=await body(req),name=validPath(input.path);fs.mkdirSync(within(libraryRoot(p),name,true),{recursive:true,mode:0o700});core.engine.store.save();return json(res,{path:name,is_directory:true});}
     if(suffix==='/files:delete'&&method==='POST'){const input=await body(req),name=validPath(input.path),target=within(libraryRoot(p),name);
       if(fs.existsSync(target)&&fs.statSync(target).isDirectory()&&!input.recursive&&fs.readdirSync(target).length)return json(res,{error:{message:'Folder is not empty'}},409);

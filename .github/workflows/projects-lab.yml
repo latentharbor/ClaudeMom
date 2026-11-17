@@ -37,7 +37,7 @@ jobs:
           node --check crates/claude-local/runtime/projects-mcp.mjs
           node --check crates/claude-local/runtime/projects-ds-api.mjs
           node --check crates/claude-local/runtime/projects-ds-core.mjs
-          node --test crates/claude-local/runtime/projects-local.test.mjs crates/claude-local/runtime/projects-engine.test.mjs crates/claude-local/runtime/projects-protocol.test.mjs
+          node --test crates/claude-local/runtime/projects-local.test.mjs crates/claude-local/runtime/projects-engine.test.mjs crates/claude-local/runtime/projects-protocol.test.mjs crates/claude-local/runtime/projects-migration.test.mjs
       - name: Build isolated manager
         working-directory: apps/claude-mom
         run: |
