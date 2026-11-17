@@ -80,6 +80,8 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   }
   await until(()=>local("!!root.querySelector('[data-toggle]')"));
   await local("(()=>{root.querySelector('[data-toggle]').click();return true;})()");
+  const panelBackground=await local("getComputedStyle(root.querySelector('[data-panel]')).backgroundColor");
+  assert.ok(!['transparent','rgba(0, 0, 0, 0)'].includes(panelBackground),'Local approval panel is opaque');
   await clickLocal('Library');
   await submitLocal('file',{path:'ui-library.md',content:'UI_LIBRARY_REFERENCE'});
   await until(()=>savedState().files.some(f=>f.path==='ui-library.md'));
@@ -94,6 +96,8 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   assert.equal(savedState().messages.find(m=>m.id===thread.id).thread_status,'needs_input');
   await clickLocal('权限确认');
   await until(()=>local("root.querySelector('[data-content]').textContent.includes('ui-project-approved.txt')"));
+  assert.equal(await local("root.querySelector('[data-tab][aria-selected=true]').dataset.tab"),'permissions');
+  await delay(200);
   const approvalFrame=await frontend();await rpc('/screenshot',{id:approvalFrame.id,name:'projects-permission.png'});
   fs.copyFileSync(path.join(root,'projects-permission.png'),path.join(output,'projects-permission.png'));
   await clickLocal('仅允许这次');

@@ -94,8 +94,14 @@
   function mount() {
     const id=/\/(?:epitaxy|code)\/project\/(chan_[A-Za-z0-9_-]+)/.exec(location.pathname)?.[1];
     if(id===project)return;stream?.close();host?.remove();window.__claudeMomLocalProjectDraft=false;project=id;if(!id)return;
-    host=node('div',undefined,{id:'claudemom-local-projects'});root=host.attachShadow({mode:'open'});
+    host=node('div',undefined,{id:'claudemom-local-projects'});
+    const foreground=getComputedStyle(document.body).color.match(/[\d.]+/g)?.slice(0,3).map(Number);
+    host.style.colorScheme=foreground&&foreground.reduce((n,v)=>n+v,0)>420?'dark':'light';
+    root=host.attachShadow({mode:'open'});
     const style=node('style');style.textContent=`:host{font:14px system-ui;color:var(--text-primary,#292723)}*{box-sizing:border-box}button,input,textarea,select{font:inherit;color:inherit}button{border:1px solid #ddd9d3;border-radius:8px;background:var(--bg-100,#faf9f6);padding:7px 10px;cursor:pointer}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #b76143;outline-offset:2px}button[aria-selected=true]{background:#eee7df}button:disabled{opacity:.5;cursor:wait}[data-toggle]{position:fixed;right:18px;bottom:18px;z-index:100001}[data-panel]{position:fixed;right:18px;top:70px;bottom:64px;width:min(460px,calc(100vw - 36px));z-index:100002;background:var(--bg-100,#faf9f6);border:1px solid #ddd9d3;border-radius:14px;box-shadow:0 8px 30px #0002;display:flex;flex-direction:column}[hidden]{display:none!important}header,nav{display:flex;gap:6px;padding:12px;border-bottom:1px solid #ddd9d3}header{align-items:center;justify-content:space-between}main{overflow:auto;padding:16px}form,section{display:grid;gap:9px;padding:12px 0;border-bottom:1px solid #ddd9d3}label{display:grid;gap:5px}input,textarea,select{border:1px solid #d2ccc3;border-radius:7px;padding:8px;background:transparent;width:100%}textarea{min-height:80px;resize:vertical}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto}section button{justify-self:start}p{line-height:1.5;color:#6b665f}[data-error]{color:#a33;padding:0 14px}`;root.append(style);
+    // Vendor theme variables can be HSL channel triples rather than colors.
+    // System colors keep this permission surface opaque in both appearances.
+    style.textContent+=':host{color:CanvasText}button{background:Canvas}[data-panel]{background:Canvas}';
     const toggle=button('本地项目',()=>{panel.hidden=!panel.hidden;if(!panel.hidden){render();void refresh();}});toggle.dataset.toggle='';root.append(toggle);
     panel=node('aside',undefined,{'data-panel':'',role:'dialog','aria-label':'本地 Projects 管理'});panel.hidden=true;
     panel.addEventListener('input',()=>{window.__claudeMomLocalProjectDraft=[...panel.querySelectorAll('input:not([type=file]),textarea,select')].some(e=>e.value!==(e.dataset.baseline||''));});
