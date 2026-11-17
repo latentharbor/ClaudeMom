@@ -1,7 +1,7 @@
 name: Site policy compatibility
 on:
   push:
-    branches: [fix-site-policy, merge-upstream-20261117, fix-browser-capability-20261117]
+    branches: [fix-site-policy, merge-upstream-20261117, fix-browser-capability-20261117, fix-chat-replay-20261117]
   workflow_dispatch:
 permissions:
   contents: read

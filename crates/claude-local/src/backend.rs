@@ -864,7 +864,8 @@ fn install_assets(root: &Path) -> Result<()> {
     Ok(())
 }
 
-// 这些探测命令只输出短状态；所有等待均有上限，避免系统工具卡住管理器。
+// Drain stdout while the child runs. A full pipe otherwise prevents the child
+// from exiting and makes a healthy process probe look like a timeout.
 fn probe(command: &mut Command, timeout: Duration) -> Result<(bool, Vec<u8>)> {
     let mut child = command
         .stdin(Stdio::null())
@@ -873,12 +874,25 @@ fn probe(command: &mut Command, timeout: Duration) -> Result<(bool, Vec<u8>)> {
         .spawn()
         .context("无法运行 Claude 本地服务检查")?;
     let deadline = Instant::now() + timeout;
+    let mut stdout = child.stdout.take().context("无法读取本地服务检查输出")?;
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = (|| -> std::io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 8192];
+            loop {
+                let length = stdout.read(&mut chunk)?;
+                if length == 0 { return Ok(bytes); }
+                let keep = length.min((64 * 1024_usize).saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&chunk[..keep]);
+            }
+        })();
+        let _ = send.send(result);
+    });
     loop {
         if let Some(status) = child.try_wait()? {
-            let mut bytes = Vec::new();
-            if let Some(stdout) = child.stdout.take() {
-                stdout.take(64 * 1024).read_to_end(&mut bytes)?;
-            }
+            let bytes = receive.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .context("读取本地服务检查输出超时")??;
             return Ok((status.success(), bytes));
         }
         if Instant::now() >= deadline {
@@ -1052,35 +1066,39 @@ fn in_own_session(own: Option<u32>, process: Option<u32>) -> bool {
     }
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn desktop_pids_from_images(listing: &str, isolated: Option<&str>) -> Vec<String> {
+    listing.lines().filter_map(|line| {
+        let (pid, image) = line.trim().split_once(char::is_whitespace)?;
+        let image = image.trim();
+        let wanted = isolated.map_or_else(|| image.ends_with("/Contents/MacOS/Claude"), |exact| image == exact);
+        (wanted && !pid.is_empty() && pid.bytes().all(|c| c.is_ascii_digit())).then(|| pid.to_string())
+    }).collect()
+}
+
 fn claude_processes() -> Result<String> {
     #[cfg(target_os = "macos")]
     {
-        if let Some(app) = crate::host::isolated_desktop_app() {
-            let binary = executable(&app).to_string_lossy().into_owned();
-            let (success, bytes) = probe(
-                Command::new("/bin/ps").args(["-ax", "-o", "pid=,command="]),
-                PROBE_TIMEOUT,
-            )?;
-            ensure!(success, "Cannot inspect isolated Desktop processes");
-            let lines = String::from_utf8_lossy(&bytes);
-            return Ok(lines.lines().filter(|line| {
-                let command = line.trim_start().split_once(char::is_whitespace)
-                    .map(|(_, rest)| rest.trim_start()).unwrap_or("");
-                command == binary.as_str() || command.strip_prefix(binary.as_str()).is_some_and(|tail| tail.starts_with(' '))
-            }).collect::<Vec<_>>().join("\n"));
-        }
-        // 只看当前用户的进程（pgrep 默认匹配所有用户）。
+        // Find process names first, then inspect executable paths. Matching all
+        // command-line arguments also finds CLI/MCP processes which merely
+        // mention Claude's path and can produce many kilobytes of credentials.
         // SAFETY: getuid 无参数、不会失败。
         let uid = unsafe { libc::getuid() }.to_string();
         let (success, bytes) = probe(
-            Command::new("/usr/bin/pgrep").args(["-U", &uid, "-fl", "/Contents/MacOS/Claude( |$)"]),
+            Command::new("/usr/bin/pgrep").args(["-U", &uid, "-x", "Claude"]),
             PROBE_TIMEOUT,
         )?;
-        return Ok(if success {
-            String::from_utf8_lossy(&bytes).into_owned()
-        } else {
-            String::new()
-        });
+        if !success { return Ok(String::new()); }
+        let pids = String::from_utf8_lossy(&bytes).lines().map(str::trim)
+            .filter(|pid| !pid.is_empty() && pid.bytes().all(|c| c.is_ascii_digit()))
+            .collect::<Vec<_>>().join(",");
+        if pids.is_empty() { return Ok(String::new()); }
+        let (_, images) = probe(Command::new("/bin/ps").args(["-p", &pids, "-o", "pid=,comm="]), PROBE_TIMEOUT)?;
+        let isolated = crate::host::isolated_desktop_app().map(|app| executable(&app).to_string_lossy().into_owned());
+        let desktops = desktop_pids_from_images(&String::from_utf8_lossy(&images), isolated.as_deref()).join(",");
+        if desktops.is_empty() { return Ok(String::new()); }
+        let (success, args) = probe(Command::new("/bin/ps").args(["-p", &desktops, "-o", "pid=,command="]), PROBE_TIMEOUT)?;
+        return Ok(if success { String::from_utf8_lossy(&args).into_owned() } else { String::new() });
     }
     #[cfg(windows)]
     {
@@ -2584,6 +2602,23 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_image_selection_excludes_cli_and_respects_isolation() {
+        let images = "11 /Applications/Claude.app/Contents/MacOS/Claude\n12 /Users/test/.local/bin/claude\n13 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper\n14 /Users/test/Claude UI Lab.app/Contents/MacOS/Claude\n";
+        assert_eq!(desktop_pids_from_images(images, None), vec!["11", "14"]);
+        assert_eq!(desktop_pids_from_images(images, Some("/Users/test/Claude UI Lab.app/Contents/MacOS/Claude")), vec!["14"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_drains_large_output_without_deadlock_and_keeps_a_bound() {
+        let (ok, bytes) = probe(Command::new("/usr/bin/head").args(["-c", "262144", "/dev/zero"]), Duration::from_secs(5)).unwrap();
+        assert!(ok);
+        assert_eq!(bytes.len(), 64 * 1024);
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        assert!(probe(Command::new("/bin/sleep").arg("2"), Duration::from_millis(60)).is_err());
+    }
 
     #[test]
     fn upstream_web_proxy_prefers_inherited_then_system_and_only_http() {

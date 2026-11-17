@@ -539,6 +539,7 @@ function pushMessage(conv, msg) {
     parent_message_uuid: msg.parent ?? null,
     text: msg.text ?? "",
     content: [{ type: "text", text: msg.text ?? "", citations: [] }],
+    attachments: [], files: [], files_v2: [], sync_sources: [],
     created_at: now(),
     updated_at: now(),
     ...(msg.stop_reason ? { stop_reason: msg.stop_reason } : {}),
@@ -923,7 +924,15 @@ function restTime(value, fallback) {
  * 两边都要能读出来，否则从另一条路径建的会话打开就是空的。
  */
 function restMessages(c) {
-  if (c.chat_messages?.length) return c.chat_messages;
+  // Existing conversations also need these collections. The current UI calls
+  // attachments.some() after the stream settles; absent fields crash the row.
+  const complete = message => ({ ...message,
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    files: Array.isArray(message.files) ? message.files : [],
+    files_v2: Array.isArray(message.files_v2) ? message.files_v2 : [],
+    sync_sources: Array.isArray(message.sync_sources) ? message.sync_sources : [],
+  });
+  if (c.chat_messages?.length) return c.chat_messages.map(complete);
   const messages = [];
   for (const turn of c.turns || []) {
     const created = restTime(turn.created, c.created_at);
@@ -938,7 +947,7 @@ function restMessages(c) {
         turn.complete ? { stop_reason: turn.stopReason === "error" ? "error" : "end_turn" } : {}));
     }
   }
-  return messages;
+  return messages.map(complete);
 }
 
 function convToRest(c, { messages = false } = {}) {
@@ -1069,6 +1078,7 @@ function mockApi(req, res, url) {
   if (method === "GET" && /^\/api\/organizations\/[^/]+\/cowork_settings$/.test(p)) {
     return json(res, { browser_pane_enabled: true });
   }
+  if (method === "GET" && p === "/api/frame/types") return json(res, { types: [] });
 
   // Code 的上下文来自 CLI model_selector，不读取网页的 hard_limit。
   const selector = p.match(/^\/api\/(?:organizations\/[^/]+\/)?model_selector\/([^/]+)$/);

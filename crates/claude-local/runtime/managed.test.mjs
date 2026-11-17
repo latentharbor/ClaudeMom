@@ -1079,6 +1079,36 @@ test("organization browser capability does not fall through to an empty response
   assert.deepEqual(consent.json, { allowAllBrowserSites: false });
 });
 
+test("settled and previously saved messages retain the collections used by transcript rows", async () => {
+  const conv = "bad00000-1111-4222-8333-444444444444";
+  const state = path.join(root, "legacy-message-state.json");
+  const at = "2026-11-17T00:00:00.000Z";
+  const messages = ["human", "assistant"].map((sender, index) => ({
+    uuid: `bad00000-1111-4222-8333-${index ? "666666666666" : "555555555555"}`,
+    sender, index, parent_message_uuid: index ? "bad00000-1111-4222-8333-555555555555" : null,
+    text: index ? "saved reply" : "saved prompt", content: [{ type: "text", text: index ? "saved reply" : "saved prompt", citations: [] }],
+    created_at: at, updated_at: at,
+  }));
+  fs.writeFileSync(state, JSON.stringify({ version: 1, notifications: [], conversations: [{
+    uuid: conv, name: "Legacy fixture", created_at: at, updated_at: at, chat_messages: messages,
+    turns: [], nextIndex: 0, leafMessageId: null, current_leaf_message_uuid: messages[1].uuid,
+  }] }));
+  const instance = await start({ CLAUDE_LOCAL_STATE_FILE: state });
+  try {
+    const result = await request(instance, `/api/organizations/local/chat_conversations/${conv}`, { host: "claude.ai" });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.json.chat_messages.map(message => message.text), ["saved prompt", "saved reply"]);
+    for (const message of result.json.chat_messages) {
+      for (const field of ["attachments", "files", "files_v2", "sync_sources"]) assert.deepEqual(message[field], []);
+      assert.equal(message.attachments.some(() => true), false);
+    }
+    const catalog = await request(instance, "/api/frame/types?org=local", { host: "claude.ai" });
+    assert.deepEqual(catalog.json, { types: [] });
+    assert.deepEqual(JSON.parse(fs.readFileSync(state)).conversations[0].chat_messages, messages,
+      "read normalization must not rewrite existing conversation text or metadata");
+  } finally { await stop(instance); }
+});
+
 test("REST completions show the upstream's error in the reply and end the stream properly", async () => {
   const completion = async (conv, prompt) => {
     const result = await request(service, `/api/organizations/local/chat_conversations/${conv}/completion`, {
