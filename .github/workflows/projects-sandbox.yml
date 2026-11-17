@@ -19,6 +19,20 @@ jobs:
           node-version: 22
       - name: Kernel boundary and scoped broker
         run: node --test crates/claude-local/runtime/projects-sandbox.test.mjs crates/claude-local/runtime/projects-broker.test.mjs
+      - name: Sandbox startup diagnostics
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import pathlib, json
+          home = pathlib.Path.home() / 'Library/Logs/DiagnosticReports'
+          for p in sorted(home.glob('*.ips'), key=lambda p:p.stat().st_mtime, reverse=True)[:5]:
+              if p.name.startswith(('true-', 'node-', 'claude-')):
+                  text=p.read_text()
+                  try:
+                      data=json.loads(text.split('\n',1)[1])
+                      print(json.dumps({'process':p.name,'termination':data.get('termination'),'exception':data.get('exception'),'asi':data.get('asi')},ensure_ascii=False))
+                  except Exception: print(text[-2000:])
+          PY
       - name: Bundled CLI and MCP under the production boundary
         env:
           GH_TOKEN: ${{ github.token }}

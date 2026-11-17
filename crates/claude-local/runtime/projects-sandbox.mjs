@@ -52,13 +52,16 @@ export function projectSandbox({workspace,configDir,tmp,sockets,binary,nodeBinar
     '  (sysctl-name "kern.osrelease") (sysctl-name "kern.ostype") (sysctl-name "kern.osversion")',
     '  (sysctl-name "kern.osproductversion") (sysctl-name "kern.version") (sysctl-name "kern.hostname")',
     '  (sysctl-name "kern.tcsm_available") (sysctl-name "kern.tcsm_enable") (sysctl-name "kern.usrstack64")',
+    '  (sysctl-name "kern.osvariant_status") (sysctl-name "kern.secure_kernel") (sysctl-name "kern.willshutdown")',
+    '  (sysctl-name "kern.bootargs") (sysctl-name "kern.maxproc") (sysctl-name "kern.ngroups")',
+    '  (sysctl-name "security.mac.lockdown_mode_state") (sysctl-name "sysctl.proc_cputype")',
     '  (sysctl-name "vm.loadavg") (sysctl-name "machdep.ptrauth_enabled"))',
     '(allow sysctl-write (sysctl-name "kern.tcsm_enable"))',
     '(allow mach-lookup (global-name "com.apple.logd") (global-name "com.apple.system.logger")',
     '  (global-name "com.apple.system.opendirectoryd.libinfo") (global-name "com.apple.system.opendirectoryd.membership")',
     '  (global-name "com.apple.bsd.dirhelper"))',
     '(allow file-read-metadata)',
-    `(allow file-read-data ${[...new Set(readable)].map(sub).join(' ')} ${[executable,node,mcp,'/dev/null','/dev/zero','/dev/random','/dev/urandom','/dev/tty'].map(literal).join(' ')} (subpath "/dev/fd"))`,
+    `(allow file-read* ${[...new Set(readable)].map(sub).join(' ')} ${[executable,node,mcp,'/dev/null','/dev/zero','/dev/random','/dev/urandom','/dev/tty'].map(literal).join(' ')} (subpath "/dev/fd"))`,
     `(allow file-write* ${writable.map(sub).join(' ')} (literal "/dev/null") (subpath "/dev/fd"))`,
     // A read-only snapshot and host-owned Git linkage stay read-only even
     // though their parent workspace is writable.
