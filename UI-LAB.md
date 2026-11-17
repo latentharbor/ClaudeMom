@@ -1,5 +1,53 @@
 # Desktop UI compatibility lab
 
+## Independent runtime branch
+
+`feature-durable-runtime-20261117` is an isolated implementation branch, not
+an installed upgrade. Its focused CI runs contracts and the native fixture;
+it never launches or reconfigures an installed production Desktop.
+
+The stable loopback service owns a single compatibility core and its listener.
+GUI exit/relaunch does not close the service's stdin or inference connections.
+The GUI adopts a healthy process only after checking its owned executable,
+instance, PID and loopback health receipt. Explicit Stop still terminates it.
+Old pipe-owned versions require an idle, explicit migration; they are never
+silently killed by a newly opened manager.
+
+Private atomic configuration generations contain credentials; health and UI
+status contain only hashes, process IDs and apply state. The local client key
+is separate from the upstream credential, so a new upstream key does not
+invalidate an already running Desktop. Code tasks retain their configuration
+through tool phases, using current/legacy Claude Code session metadata and
+native session leases. Unknown clients remain pinned until explicit native
+idle evidence; there is no HTTP-idle expiry that silently changes a task's key.
+
+Code and Cowork native idle snapshots, absence of drafts/recording/requests,
+and a final core-side admission barrier precede a core replacement. A missing
+or stale bridge never counts as idle. Only one core writes the conversation
+store. Candidates run from immutable version directories; failed startup
+restores the previous core. New requests wait at the stable listener during
+the transition. Frontend reload and SDK refresh are deferred; a native Busy
+result prevents refresh. Native binary/profile/CA/context changes remain
+explicit Desktop restart operations.
+
+Local extension verdicts identify their source as device settings, preserve
+the normal native signature/installation checks, and can be disabled in the
+manager. Recorded cloud admission for Remote Control/remote device bridges
+is disabled in local mode; local browser and MCP capabilities are separate.
+Fake-IP DNS is diagnosed, not converted into a private-network allow rule.
+Changing a system network proxy/DNS policy is outside an application hot
+reload and is not performed by this branch.
+
+The focused native fixture checks manager detach/adoption during a held Code
+reply, old/new task routing after a credential change, and live browser
+consent configuration. The reload observation covers a simple Code stream,
+tabs and draft, and a renderer-owned REST Chat request; it does not establish
+Cowork VM/tool execution, native dictation continuity or every possible tool.
+The optional SenseVoice helper still lives in the manager; a GUI restart must
+wait for an active recording to finish. The stable service listener itself
+retains its existing code until explicit Stop; compatibility-core and UI
+generations are the parts replaced while the listener keeps its port.
+
 This branch keeps the official Desktop application intact. The managed
 proxy uses the installed version's HTML, scripts and bundled gated-import
 manifest as an offline baseline. A newer official web document is retained

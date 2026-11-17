@@ -42,7 +42,8 @@ test('stable listener survives its GUI pipe; idle barrier, queued handoff and ro
     const dir = path.join(root, 'releases', hash(core)); fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'proxy.mjs'), bad ? 'syntax invalid here !' : source);
     const candidate = { schema: 1, revision: hash(letter), coreRevision: hash(core), worker: path.join(dir, 'proxy.mjs'),
-      env: { CODEX_PLUS_STATE_DIR: root, CLAUDE_LOCAL_GATEWAY_MODEL: model, CLAUDE_LOCAL_CONFIG_REVISION: hash(letter) } };
+      env: { CODEX_PLUS_STATE_DIR: root, CLAUDE_LOCAL_WEB_I18N_DIR: root,
+        CLAUDE_LOCAL_GATEWAY_MODEL: model, CLAUDE_LOCAL_CONFIG_REVISION: hash(letter) } };
     fs.writeFileSync(path.join(root, 'next.json'), JSON.stringify(candidate), { mode: 0o600 });
     fs.renameSync(path.join(root, 'next.json'), path.join(root, 'service-config.json'));
   }
@@ -84,5 +85,10 @@ test('stable listener survives its GUI pipe; idle barrier, queued handoff and ro
     await delay(700);
     assert.equal(await get('/model'), 'third', 'malformed candidate leaves the current core intact');
   } catch (error) { throw Error(`${error.message}\n${output}`); }
-  finally { child.kill('SIGTERM'); await closed; fs.rmSync(root, { recursive: true, force: true }); }
+  finally {
+    fs.writeFileSync(path.join(root, 'service-stop.json'), JSON.stringify({ instanceId: 'fixture' }), { mode: 0o600 });
+    await closed;
+    await until(() => !fs.existsSync(path.join(root, 'writer')));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -22,6 +22,7 @@ assert.ok(output && manager && officialApp && reference && ca && cliCache);
 fs.mkdirSync(output, { recursive: true });
 const root = path.join(os.homedir(), ".claude-mom-ui-lab");
 const requests = [];
+let alternate;
 const upstream = http.createServer(async (req, res) => {
   if (req.url === "/reload-probe-page") {
     res.writeHead(200, { "content-type": "text/html" });
@@ -255,6 +256,51 @@ try {
     const query = expression => evaluate(codeFrame, expression);
     const codeEntry = await until(() => held.find(entry => entry.kind === "code"));
     await until(async () => (await query(`window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)})`))?.isRunning);
+    if (serviceProbe) {
+      const health = () => fetch(`http://127.0.0.1:${ready.port}/__codex_claude_local/health`).then(r => r.json());
+      const before = await health();
+      assert.equal(before.serviceProtocol, 1);
+      await until(async () => (await health()).bridgeFresh);
+      const detached = child;
+      detached.stdin.write('detach\n');
+      await once(detached, 'exit');
+      assert.equal((await health()).pid, before.pid);
+      assert.equal(codeEntry.aborted, false);
+      child = spawn(path.join(manager, 'Contents/MacOS/claude-mom'), ['--lab-resume'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      child.stdout.on('data', chunk => { managerOutput += chunk.toString(); });
+      child.stderr.on('data', chunk => { managerOutput += chunk.toString(); });
+      await until(() => managerOutput.includes('Isolated manager adopted service'));
+      assert.equal((await health()).pid, before.pid);
+      assert.equal((await rpc('/status')).pid, control.pid);
+      alternate = http.createServer(upstream.listeners('request')[0]);
+      alternate.listen(0, '127.0.0.1'); await once(alternate, 'listening');
+      const descriptorFile = path.join(root, 'claude-local/service-config.json');
+      const descriptor = JSON.parse(fs.readFileSync(descriptorFile));
+      descriptor.revision = crypto.createHash('sha256').update('owned-hot-config-fixture').digest('hex');
+      descriptor.env.CLAUDE_LOCAL_GATEWAY_URL = `http://127.0.0.1:${alternate.address().port}`;
+      descriptor.env.CLAUDE_LOCAL_GATEWAY_KEY = 'owned-hot-key-only';
+      descriptor.env.CLAUDE_LOCAL_ALLOW_ALL_BROWSER_SITES = '1';
+      fs.writeFileSync(descriptorFile + '.next', JSON.stringify(descriptor), { mode: 0o600 });
+      fs.renameSync(descriptorFile + '.next', descriptorFile);
+      await until(async () => (await health()).configHash === descriptor.revision);
+      const clientKey = fs.readFileSync(path.join(root, 'claude-local/client-key'), 'utf8');
+      const probe = async id => {
+        const response = await fetch(`http://127.0.0.1:${ready.port}/v1/messages`, { method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${clientKey}` },
+          body: JSON.stringify({ model: 'fixture/claude-sonnet-5-5', max_tokens: 32,
+            metadata: { user_id: JSON.stringify({ session_id: id }) }, messages: [{ role: 'user', content: 'OWNED_LEASE_CHECK' }] }) });
+        assert.equal(response.status, 200); await response.text();
+        return requests.at(-1).endpointPort;
+      };
+      assert.equal(await probe(sessionId.slice(6)), upstream.address().port, 'active task retains old route');
+      assert.equal(await probe(crypto.randomUUID()), alternate.address().port, 'new task uses new route');
+      const consent = (await evaluateFrontend("fetch('/__codex_plus/browser-site-consent.json',{cache:'no-store'}).then(r=>r.json())")).value;
+      assert.equal(consent.allowAllBrowserSites, true);
+      assert.equal((await health()).workerPid, before.workerPid);
+      result.service = { managerExitPreservedStream: !codeEntry.aborted, managerAdoptedSameService: true,
+        desktopPidUnchanged: true, activeTaskRoutePinned: true, newTaskUsesNewRoute: true,
+        consentHotApplied: true, workerPidUnchangedForHotConfig: true };
+    }
     let preview = null;
     try {
       preview = await until(() => query(`window['claude.web'].Launch.startBrowserPreview(${JSON.stringify(path.join(root, "scratch"))},${JSON.stringify(sessionId)})`), 20000);
@@ -361,4 +407,5 @@ try {
   if (child.exitCode === null) child.kill("SIGTERM");
   upstream.closeAllConnections();
   upstream.close();
+  alternate?.closeAllConnections(); alternate?.close();
 }

@@ -1881,6 +1881,7 @@ function forwardGatewaySnapshot(req, res, requestPath, raw) {
     json(res, { type: "error", error: { type: "api_error", message: "Local gateway unavailable" } }, 502);
   });
   req.once("aborted", () => up.destroy());
+  res.once('close', () => { if (!res.writableFinished) up.destroy(); });
   up.end(body);
 }
 

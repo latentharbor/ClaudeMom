@@ -30,7 +30,7 @@ function candidate() {
   const realRoot = fs.realpathSync(root);
   if (value.schema !== 1 || !/^[a-f0-9]{64}$/.test(value.revision) ||
       !/^[a-f0-9]{64}$/.test(value.coreRevision) || typeof value.env !== 'object' || !value.env ||
-      Object.entries(value.env).some(([key, val]) => !/^(CLAUDE_LOCAL_[A-Z_]+|CODEX_PLUS_STATE_DIR)$/.test(key) ||
+      Object.entries(value.env).some(([key, val]) => !/^(CLAUDE_LOCAL_[A-Z][A-Z0-9_]*|CODEX_PLUS_STATE_DIR)$/.test(key) ||
         typeof val !== 'string' || val.length > 1024 * 1024) ||
       typeof value.worker !== 'string' || !value.worker.startsWith(path.join(root, 'releases') + path.sep) ||
       !/^[a-f0-9]{64}$/.test(path.basename(path.dirname(value.worker))) || path.basename(value.worker) !== 'proxy.mjs' ||
@@ -195,7 +195,8 @@ function shutdown() {
   clearInterval(timer);
   server.close();
   for (const socket of tunnels) socket.destroy();
-  worker?.kill('SIGTERM');
+  if (worker?.connected) worker.send({ type: 'shutdown' });
+  else worker?.kill('SIGTERM');
   setTimeout(() => process.exit(0), 1000).unref();
 }
 server.listen(requestedPort, '127.0.0.1', async () => {

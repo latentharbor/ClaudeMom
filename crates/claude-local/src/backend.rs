@@ -1441,6 +1441,23 @@ fn config_hash(config: &ClaudeLocalSettings) -> String {
     format!("{:x}", Sha256::digest([base.as_bytes(), &ui_profile].concat()))
 }
 
+fn launch_hash(config: &ClaudeLocalSettings) -> String {
+    let upstream = host().preview_upstream(config).ok();
+    let cold = json!({ "enabled": config.enabled, "threeP": config.three_p_mode,
+        "shareHome": code_share_home(config), "desktop": desktop_fingerprint(),
+        "context": upstream.as_ref().and_then(|u| u.default_window),
+        "extraEnv": upstream.as_ref().map(|u| &u.extra_env),
+        "certificate": fs::read(root_dir().join("ca/ca.pem")).unwrap_or_default() });
+    format!("{:x}", Sha256::digest(serde_json::to_vec(&cold).unwrap_or_default()))
+}
+
+fn launch_change_pending(config: &ClaudeLocalSettings) -> bool {
+    fs::read(root_dir().join("launch.json")).ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|v| v.get("launchHash").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|hash| hash != launch_hash(config))
+}
+
 fn hash_with_desktop(config: &ClaudeLocalSettings, upstream: Value, desktop: Option<(u64, u128)>) -> String {
     format!(
         "{:x}",
@@ -1724,6 +1741,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         .is_some_and(|hash| hash != config_hash(&config));
     let independent = runtime.as_ref().is_some_and(|(_, _, _, h)| h.get("serviceProtocol").and_then(Value::as_u64) == Some(1));
     let needs_restart = (config.enabled && claude_running && (!local_process || !running))
+        || (claude_running && launch_change_pending(&config))
         || (!independent && (runtime
             .as_ref()
             .is_some_and(|(_, _, hash, _)| hash != &config_hash(&config))
@@ -1807,6 +1825,7 @@ pub fn refresh_runtime() -> Result<()> {
 fn refresh_running(config: &ClaudeLocalSettings) -> Result<()> {
     let Some((port, _, _, health)) = runtime_status() else { return Ok(()) };
     if health.get("serviceProtocol").and_then(Value::as_u64) != Some(1) { return Ok(()); }
+    if launch_change_pending(config) && !claude_processes()?.is_empty() { return Ok(()); }
     let node = node_runtime().context("未找到 Node.js")?;
     let upstream = host().prepare_upstream(config)?;
     start_backend(&root_dir(), &node, config, &upstream, Some(port))?;
@@ -2705,7 +2724,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
         write_private(
             &root.join("launch.json"),
             &serde_json::to_vec(
-                &json!({"configHash": config_hash(&config), "localMode": config.enabled}),
+                &json!({"configHash": config_hash(&config), "launchHash": launch_hash(&config), "localMode": config.enabled}),
             )?,
         )?;
     }

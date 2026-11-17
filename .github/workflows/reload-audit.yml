@@ -70,7 +70,7 @@ jobs:
             "$PWD/crates/claude-local/runtime/ca" \
             "$PWD/fixture/cli-cache" \
             "$PWD/reload-evidence" \
-            "$PWD/fixture/web-cache" --probe-reload
+            "$PWD/fixture/web-cache" --probe-reload --probe-service
       - uses: actions/upload-artifact@v4
         if: always()
         with:
