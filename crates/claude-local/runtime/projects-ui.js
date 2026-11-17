@@ -47,6 +47,8 @@
         if(['queued','running'].includes(thread.state))row.append(button('停止',()=>api(base()+'/threads/'+thread.id+'/cancel','POST',{}).then(refresh)));
         else row.append(button(thread.ds_status==='resolved'?'重开':'结项',()=>api(base()+'/threads/'+thread.id,'PATCH',{resolved:thread.ds_status!=='resolved'}).then(refresh)));
         if(thread.branch)row.append(node('p',`${thread.branch} · ${(thread.base_commit||'').slice(0,8)}`));
+        const latest=state.jobs.filter(j=>j.thread_root_id===thread.id).at(-1);
+        if(latest?.error)row.append(node('p',latest.error,{'data-task-error':''}));
         content.append(row);
       }
     }

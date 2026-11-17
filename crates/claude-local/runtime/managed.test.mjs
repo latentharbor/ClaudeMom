@@ -180,7 +180,7 @@ before(async () => {
   });
   fs.mkdirSync(path.join(root, "runtime", "scripts"), { recursive: true });
   fs.cpSync(path.join(here,'third-party'),path.join(root,'runtime/third-party'),{recursive:true});
-  for(const file of ['projects-cli.mjs','projects-ds-api.mjs','projects-ds-core.mjs','projects-protocol.mjs','projects-worktree.mjs'])fs.copyFileSync(path.join(here,file),path.join(root,'runtime',file));
+  for(const file of ['projects-sandbox.mjs','projects-broker.mjs','projects-cli.mjs','projects-ds-api.mjs','projects-ds-core.mjs','projects-protocol.mjs','projects-worktree.mjs'])fs.copyFileSync(path.join(here,file),path.join(root,'runtime',file));
   for (const file of ["proxy.mjs", "projects-local.mjs", "projects-runner.mjs", "projects-job.mjs", "projects-schedule.mjs", "projects-mcp.mjs", "projects-ui.js", "hot-runtime.mjs", "local-policy.mjs", "runtime-bridge.js", "service.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "desktop-ui.mjs", "ui-resources.mjs", "site-policy.mjs", "browser-site-consent.js", "scripts/patch-dictation-start.mjs"]) {
     fs.copyFileSync(path.join(here, file), path.join(root, "runtime", file));
   }

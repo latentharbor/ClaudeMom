@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {ProjectSandboxError} from './projects-sandbox.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const privateJSON=(file,value)=>fs.writeFileSync(file,JSON.stringify(value),{mode:0o600});
@@ -18,9 +19,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     const env={};for(const name of ['PATH','HOME','USER','LOGNAME','SHELL','LANG','LC_ALL','TZ']) {
       if(process.env[name])env[name]=process.env[name];
     }
-    return{...env,CFFIXED_USER_HOME:profileHome,CLAUDE_CONFIG_DIR:configDir,TMPDIR:tmp,CLAUDE_CODE_TMPDIR:tmp,
-      ANTHROPIC_BASE_URL:typeof baseUrl==='function'?baseUrl():baseUrl,
-      ANTHROPIC_API_KEY:clientKey,ANTHROPIC_AUTH_TOKEN:clientKey,
+    return{...env,CFFIXED_USER_HOME:profileHome,CLAUDE_CONFIG_DIR:configDir,TMPDIR:tmp,CLAUDE_CODE_TMPDIR:tmp,TMPPREFIX:path.join(tmp,'zsh'),
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',DISABLE_AUTOUPDATER:'1',CI:'1'};
   }
   function observe(jobDir,settle) {
@@ -37,10 +36,12 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
   function run({projectId,prompt,model,effort='low',sessionId=crypto.randomUUID(),resume=false,role='worker',
     lane='coordinator',jobId=crypto.randomUUID(),toolToken,library=[],onPrepared=()=>{},workspace}) {
     if(closed)throw Error('Project runner closed');
+    if(process.platform!=='darwin'||!fs.existsSync('/usr/bin/sandbox-exec'))throw new ProjectSandboxError('The required macOS process Sandbox is unavailable; execution was blocked');
     if(!/^chan_[A-Za-z0-9_-]{1,120}$/.test(projectId)||typeof prompt!=='string'||prompt.length>200000)throw Error('Invalid local project job');
     if(typeof model!=='string'||!model||model.startsWith('-')||model.length>500)throw Error('Invalid project model');
     if(!['low','medium','high','max'].includes(effort))throw Error('Invalid local project effort');
     if(!/^[0-9a-f-]{36}$/i.test(sessionId))throw Error('Invalid project session');
+    if(!/^[0-9a-f-]{36}$/i.test(jobId)||typeof toolToken!=='string'||toolToken.length<16)throw Error('A scoped project job token is required');
     if(!/^(?:coordinator|cmsg_[A-Za-z0-9_-]{1,120})$/.test(lane)||!['worker','coordinator'].includes(role))throw Error('Invalid project lane');
     if(active.size>=4)throw Error('Local project concurrency limit reached');
     const executable=typeof binary==='function'?binary():binary;
@@ -63,8 +64,6 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
       else fs.writeFileSync(target,Buffer.from(file.content,'base64'),{flag:'wx',mode:0o400});
     }
     const api=typeof baseUrl==='function'?baseUrl():baseUrl;
-    privateJSON(path.join(jobDir,'mcp.json'),{mcpServers:toolToken?{local_project:{command:process.execPath,
-      args:[path.join(here,'projects-mcp.mjs')],env:{LOCAL_PROJECT_ORIGIN:api,LOCAL_PROJECT_TOKEN:toolToken,LOCAL_PROJECT_JOB:id,LOCAL_PROJECT_ROLE:role}}}:{}});
     const transcripts=path.join(configDir,'projects');
     const savedTranscript=fs.existsSync(transcripts)&&fs.readdirSync(transcripts,{withFileTypes:true}).some(d=>
       d.isDirectory()&&fs.existsSync(path.join(transcripts,d.name,sessionId+'.jsonl')));
@@ -75,12 +74,16 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
       '--permission-mode','default',
       ...(toolToken?['--permission-prompt-tool','mcp__local_project__approve','--allowedTools',
         'mcp__local_project__start_thread_session,mcp__local_project__list_thread_sessions,mcp__local_project__send_message,mcp__local_project__fetch_messages,mcp__local_project__list_project_files,mcp__local_project__read_project_file,mcp__local_project__read_memory,mcp__local_project__write_memory,mcp__local_project__create_schedule,mcp__local_project__list_schedules,mcp__local_project__project_launch_task,mcp__local_project__project_list_threads,mcp__local_project__project_send_to_thread,mcp__local_project__project_update_thread,mcp__local_project__project_read_context,mcp__local_project__project_read_activity,mcp__local_project__project_search_history,mcp__local_project__project_remember,mcp__local_project__project_forget,mcp__local_project__project_memory_file,mcp__local_project__project_finish_task,mcp__local_project__project_publish_file']:[]),
-      '--settings',JSON.stringify({sandbox:{enabled:false}})];
-    privateJSON(path.join(jobDir,'status.json'),{schema:1,id,sessionId,state:'starting',createdAt:new Date().toISOString()});
+      // The outer Seatbelt profile covers the complete CLI and all children.
+      // Do not nest the shell-only sandbox, which cannot expand this boundary.
+      '--settings',JSON.stringify({sandbox:{enabled:false,allowUnsandboxedCommands:false}})];
+    const sandbox={required:true,version:1,backend:'macos-seatbelt',enforced:false};
+    privateJSON(path.join(jobDir,'status.json'),{schema:1,id,sessionId,state:'starting',sandbox,createdAt:new Date().toISOString()});
     privateJSON(path.join(jobDir,'launch.json'),{id,sessionId,binary:executable,args,prompt:prompt+`\n\nProject Library snapshot: ${libraryRoot}`,cwd,
-      controlToken:toolToken||crypto.randomBytes(24).toString('hex'),env:{...environment(configDir,tmp),MCP_TOOL_TIMEOUT:'86400000'}});
+      sandbox,role,runtimeDir:here,nodeBinary:process.execPath,upstream:api,clientKey,toolToken,
+      controlToken:toolToken,env:{...environment(configDir,tmp),MCP_TOOL_TIMEOUT:'86400000'}});
     // The controller journals ownership before any external tool can execute.
-    onPrepared({id,sessionId,directory:jobDir,workspace:cwd});
+    onPrepared({id,sessionId,directory:jobDir,workspace:cwd,sandbox});
     const host=spawn(process.execPath,[path.join(here,'projects-job.mjs'),jobDir],{
       detached:true,env:{PATH:process.env.PATH||'/usr/bin:/bin'},stdio:'ignore'});
     host.once('error',()=>privateJSON(path.join(jobDir,'status.json'),{schema:1,id,sessionId,state:'failed',code:-1,result:''}));

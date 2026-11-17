@@ -1,0 +1,38 @@
+name: Projects process Sandbox
+on:
+  push:
+    branches: [fix-projects-process-sandbox-0.1.13]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: projects-sandbox-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  isolation:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Kernel boundary and scoped broker
+        run: node --test crates/claude-local/runtime/projects-sandbox.test.mjs crates/claude-local/runtime/projects-broker.test.mjs
+      - name: Bundled CLI and MCP under the production boundary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p fixture sandbox-evidence
+          gh release download lab-fixtures-5.11492.5 -R "$GITHUB_REPOSITORY" -p cli-cache-2.1.325.zip -p SHA256SUMS --dir fixture
+          (cd fixture && awk '/cli-cache-2.1.325.zip$/' SHA256SUMS | shasum -a 256 -c -)
+          ditto -x -k fixture/cli-cache-2.1.325.zip fixture
+          export PROJECTS_TEST_CLI="$PWD/$(find fixture/cli-cache -path '*/claude.app/Contents/MacOS/claude' -type f -print -quit)"
+          export PROJECTS_TEST_EVIDENCE="$PWD/sandbox-evidence"
+          node --test crates/claude-local/runtime/projects-integration.test.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Projects-Sandbox-evidence
+          path: sandbox-evidence/
+          if-no-files-found: ignore

@@ -109,7 +109,7 @@ export class LocalDSProjects {
       const task=this.runner.run({projectId:channelId(p.id),prompt,model:job.model,effort:job.effort,sessionId:t.sessionId,
         resume:!!previous,role:isMain?'coordinator':'worker',lane:isMain?'coordinator':messageId(t.id),workspace:t.cwd,
         jobId:job.id,toolToken:job.tool_token,library:this.librarySnapshot(p),onPrepared:prepared=>{
-          job.state='running';job.directory=prepared.directory;job.started_at=now();this.save();this.changed();
+          job.state='running';job.directory=prepared.directory;job.sandbox=prepared.sandbox;job.started_at=now();this.save();this.changed();
         }});
       job.state='running';job.directory=task.directory;job.started_at=now();this.save();this.changed();
       this.observing.add(job.id);void task.done.then(result=>this.deliver(job.id,result));
@@ -120,6 +120,9 @@ export class LocalDSProjects {
     const t=this.engine.store.data.threads.find(t=>t.id===job.ds_thread_id);if(!t)return;
     if(job.cancel_requested)result={...result,state:'cancelled'};
     job.state=result.state;job.finished_at=now();job.result=result.result||'';job.usage=result.usage||{};job.model_usage=result.modelUsage||{};
+    if(result.sandbox)job.sandbox=result.sandbox;
+    if(result.error_code)job.error_code=result.error_code;
+    if(result.error)job.error=result.error;
     this.save();this.observing.delete(id);
     const seq=job.ds_seq_base||0;
     if(result.result&&(!t.lastEventSeq||t.lastEventSeq<seq+1))this.engine.onEvent(t.sessionId,{seq:seq+1,type:'assistant/message',data:{message:{content:[{type:'text',text:result.result}]}}});

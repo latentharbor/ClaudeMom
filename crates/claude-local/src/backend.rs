@@ -58,6 +58,8 @@ pub struct TemplateVersion {
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("projects-sandbox.mjs", include_bytes!("../runtime/projects-sandbox.mjs")),
+    ("projects-broker.mjs", include_bytes!("../runtime/projects-broker.mjs")),
     ("projects-cli.mjs", include_bytes!("../runtime/projects-cli.mjs")),
     ("projects-ds-api.mjs", include_bytes!("../runtime/projects-ds-api.mjs")),
     ("projects-ds-core.mjs", include_bytes!("../runtime/projects-ds-core.mjs")),

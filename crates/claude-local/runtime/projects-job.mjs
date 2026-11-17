@@ -1,50 +1,60 @@
-// Owned local job host. It outlives Desktop and the compatibility core. Only the
-// isolated Projects lab launches this file; there is no production enablement.
+// Trusted job controller and narrowly scoped broker. Only its CLI child and
+// descendants execute model actions, inside the required outer OS sandbox.
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import {spawn} from 'node:child_process';
+import {createProjectBroker} from './projects-broker.mjs';
+import {projectSandbox,sandboxCommand} from './projects-sandbox.mjs';
 
-const directory=process.argv[2];
-const configFile=path.join(directory,'launch.json');
-const config=JSON.parse(fs.readFileSync(configFile));
-fs.unlinkSync(configFile); // Do not leave the local gateway key in job history.
+const directory=process.argv[2],file=path.join(directory,'launch.json');
+const config=JSON.parse(fs.readFileSync(file));fs.unlinkSync(file);
+const sandbox={required:true,version:1,backend:'macos-seatbelt',enforced:false};
+let output='',errors='',finished=false,cancelled=false,cli,broker,sockets,cancellation;
 const record=values=>{
   const tmp=path.join(directory,'status.next');
-  fs.writeFileSync(tmp,JSON.stringify({schema:1,id:config.id,sessionId:config.sessionId,...values}),{mode:0o600});
+  fs.writeFileSync(tmp,JSON.stringify({schema:1,id:config.id,sessionId:config.sessionId,sandbox,...values}),{mode:0o600});
   fs.renameSync(tmp,path.join(directory,'status.json'));
 };
-let output='',errors='',finished=false,cancelled=false;
-function finish(values) {
-  if(finished)return;finished=true;
-  clearInterval(cancellation);
+async function finish(values) {
+  if(finished)return;finished=true;clearInterval(cancellation);
   let answer;
-  for(const line of output.split('\n')) {
-    try{const value=JSON.parse(line);if(value.type==='result')answer=value;}catch{}
-  }
+  for(const line of output.split('\n'))try{const value=JSON.parse(line);if(value.type==='result')answer=value;}catch{}
   if(!answer)try{const value=JSON.parse(output);answer=(Array.isArray(value)?value:[value]).findLast(v=>v?.type==='result');}catch{}
   fs.writeFileSync(path.join(directory,'stdout.log'),output,{mode:0o600});
   fs.writeFileSync(path.join(directory,'stderr.log'),errors,{mode:0o600});
+  await broker?.close();if(sockets)fs.rmSync(sockets,{recursive:true,force:true});
   record({state:cancelled?'cancelled':values.code===0&&answer&&answer.is_error!==true?'completed':'failed',finishedAt:new Date().toISOString(),
-    result:typeof answer?.result==='string'?answer.result.slice(0,100000):'',
-    usage:answer?.usage||{},modelUsage:answer?.modelUsage||{},...values,
-    // Error text stays in the private job folder, never in a public health API.
-    error:values.code===0?undefined:errors.slice(-4000)});
+    result:typeof answer?.result==='string'?answer.result.slice(0,100000):'',usage:answer?.usage||{},modelUsage:answer?.modelUsage||{},...values,
+    error:values.error||(values.code===0?undefined:'The sandboxed CLI stopped; see the private task log. No unsandboxed retry was started.')});
 }
-const cli=spawn(config.binary,config.args,{cwd:config.cwd,env:config.env,detached:true,stdio:['pipe','pipe','pipe']});
-const cancellation=setInterval(()=>{
-  if(finished||cancelled)return;
-  try{if(JSON.parse(fs.readFileSync(path.join(directory,'cancel.json'))).token!==config.controlToken)return;}catch{return;}
-  cancelled=true;
-  try{process.kill(-cli.pid,'SIGTERM');}catch{}
-  setTimeout(()=>{if(!finished)try{process.kill(-cli.pid,'SIGKILL');}catch{}},5000).unref();
-},300);
-record({state:'running',startedAt:new Date().toISOString(),hostPid:process.pid,pid:cli.pid});
-cli.once('error',()=>finish({code:-1}));
-cli.stdout.on('data',part=>{
-  if(Buffer.byteLength(output)<=16*1024*1024)output+=part;
-  if(Buffer.byteLength(output)>16*1024*1024){errors='Local job output limit reached';cli.kill('SIGTERM');}
-});
-cli.stderr.on('data',part=>{errors=(errors+part).slice(-32000);});
-cli.once('close',(code,signal)=>finish({code:code??-1,signal}));
-cli.stdin.on('error',()=>{});
-cli.stdin.end(config.prompt);
+try{
+  broker=await createProjectBroker({upstream:config.upstream,clientKey:config.clientKey,toolToken:config.toolToken,
+    jobId:config.id,model:config.args[config.args.indexOf('--model')+1],sessionId:config.sessionId});
+  sockets=fs.mkdtempSync('/private/tmp/cm-project-');fs.chmodSync(sockets,0o700);
+  const mcpFile=path.join(directory,'mcp.json');
+  fs.writeFileSync(mcpFile,JSON.stringify({mcpServers:{local_project:{command:config.nodeBinary,args:[path.join(config.runtimeDir,'projects-mcp.mjs')],
+    env:{LOCAL_PROJECT_ORIGIN:broker.origin,LOCAL_PROJECT_TOKEN:config.toolToken,LOCAL_PROJECT_JOB:config.id,LOCAL_PROJECT_ROLE:config.role}}}}),{mode:0o600});
+  const plan=projectSandbox({workspace:config.cwd,configDir:config.env.CLAUDE_CONFIG_DIR,tmp:config.env.TMPDIR,sockets,binary:config.binary,
+    nodeBinary:config.nodeBinary,runtimeDir:config.runtimeDir,mcpFile,port:broker.port});
+  const profileFile=path.join(directory,'sandbox.sb');fs.writeFileSync(profileFile,plan.profile,{mode:0o600});
+  const command=sandboxCommand(plan,profileFile,config.binary,['--messaging-socket-path',path.join(sockets,'agent.sock'),...config.args]);
+  const env={...config.env,ANTHROPIC_BASE_URL:broker.origin,ANTHROPIC_API_KEY:config.toolToken,ANTHROPIC_AUTH_TOKEN:config.toolToken};
+  cli=spawn(command.command,command.args,{cwd:config.cwd,env,detached:true,stdio:['pipe','pipe','pipe']});
+  sandbox.enforced=true;
+  cancellation=setInterval(()=>{
+    if(finished||cancelled)return;
+    try{if(JSON.parse(fs.readFileSync(path.join(directory,'cancel.json'))).token!==config.controlToken)return;}catch{return;}
+    cancelled=true;try{process.kill(-cli.pid,'SIGTERM');}catch{}
+    setTimeout(()=>{if(!finished)try{process.kill(-cli.pid,'SIGKILL');}catch{}},5000).unref();
+  },300);
+  record({state:'running',startedAt:new Date().toISOString(),hostPid:process.pid,pid:cli.pid});
+  cli.once('error',()=>void finish({code:-1,error_code:'project_sandbox_launch_failed',error:'The required Sandbox process could not be launched; execution was blocked.'}));
+  cli.stdout.on('data',part=>{if(Buffer.byteLength(output)<=16*1024*1024)output+=part;
+    if(Buffer.byteLength(output)>16*1024*1024){errors='Project task output limit reached';try{process.kill(-cli.pid,'SIGTERM');}catch{}}});
+  cli.stderr.on('data',part=>{errors=(errors+part).slice(-32000);});
+  cli.once('close',(code,signal)=>void finish({code:code??-1,signal}));
+  cli.stdin.on('error',()=>{});cli.stdin.end(config.prompt);
+}catch(error){
+  errors=String(error.message);await finish({code:-1,error_code:error.code||'project_sandbox_start_failed',
+    error:'The required process Sandbox could not start; execution was blocked. Check the private task log.'});
+}
