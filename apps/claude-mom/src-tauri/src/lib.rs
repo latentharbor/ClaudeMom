@@ -50,6 +50,14 @@ pub fn run() {
         log::append("app.already_running", serde_json::json!({ "port": guard_port }));
         return;
     };
+    // Installation/migration can request a normal managed launch without UI
+    // automation. This remains the long-lived GUI process (and owns dictation),
+    // and perform refuses to replace an already running Desktop.
+    if std::env::args().any(|arg| arg == "--launch-claude") {
+        if let Err(error) = claude_local::perform("launch") {
+            log::append("claude_local.requested_launch_failed", serde_json::json!({ "message": format!("{error:#}") }));
+        }
+    }
     // 程序重启后，Claude 可能还挂在旧代理端口上：在原端口把本地服务拉起来，它的重试就能连上。
     std::thread::spawn(|| match claude_local::resume_attached_proxy() {
         Ok(Some(port)) => log::append("claude_local.resumed", serde_json::json!({ "port": port })),

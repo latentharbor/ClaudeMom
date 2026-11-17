@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, windows-latest]
+        platform: [macos-15, windows-latest]
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +26,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: 前端：类型检查、测试、构建
         working-directory: apps/claude-mom
@@ -39,11 +41,11 @@ jobs:
         run: cargo test --workspace
 
       - name: 本地兼容服务（Node）测试
-        if: matrix.platform == 'macos-latest'
+        if: runner.os == 'macOS'
         working-directory: crates/claude-local/runtime
         run: |
           bash scripts/gen-ca.sh
-          node --test --test-timeout=120000 managed.test.mjs proxy.test.mjs scripts/*.test.mjs
+          node --test --test-timeout=120000 hot-runtime.test.mjs runtime-bridge.test.mjs local-policy.test.mjs service.test.mjs browser-site-consent.test.mjs site-policy.test.mjs managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs scripts/*.test.mjs
 
       - name: release 编译
         run: cargo build --release -p claude-mom

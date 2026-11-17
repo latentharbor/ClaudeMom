@@ -2,9 +2,9 @@
 
 ## Independent runtime branch
 
-`feature-durable-runtime-20261117` is an isolated implementation branch, not
-an installed upgrade. Its focused CI runs contracts and the native fixture;
-it never launches or reconfigures an installed production Desktop.
+The independent runtime is included in 0.1.11. Its focused CI runs contracts
+and the native fixture; the isolated checks never launch or reconfigure an
+installed production Desktop.
 
 The stable loopback service owns a single compatibility core and its listener.
 GUI exit/relaunch does not close the service's stdin or inference connections.

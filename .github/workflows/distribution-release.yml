@@ -11,6 +11,7 @@ on:
         type: string
 permissions:
   contents: write
+  actions: read
 concurrency:
   group: distribution-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
@@ -34,6 +35,8 @@ jobs:
           cache-dependency-path: apps/claude-mom/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Validate release inputs
         run: |
           set -euo pipefail
@@ -72,6 +75,29 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+      - name: Require the release source to pass CI
+        if: github.repository == 'latentharbor/ClaudeMom'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          end = time.monotonic() + 1200
+          while time.monotonic() < end:
+              runs = json.loads(subprocess.check_output([
+                  'gh', 'run', 'list', '-R', os.environ['GITHUB_REPOSITORY'], '--workflow', 'ci.yml',
+                  '--event', 'push', '--branch', 'main', '--commit', commit, '--limit', '10',
+                  '--json', 'databaseId,status,conclusion,url'], text=True))
+              if any(run['status'] == 'completed' and run['conclusion'] == 'success' for run in runs):
+                  print('Release source CI passed:', commit)
+                  break
+              if runs and all(run['status'] == 'completed' for run in runs):
+                  raise SystemExit('Release source CI did not pass; distribution remains unpublished')
+              time.sleep(10)
+          else:
+              raise SystemExit('Release source CI still pending; distribution remains unpublished')
+          PY
       - name: Publish complete distribution
         if: github.repository == 'latentharbor/ClaudeMom'
         env:

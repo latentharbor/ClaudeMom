@@ -64,6 +64,12 @@ test('stable listener survives its GUI pipe; idle barrier, queued handoff and ro
     const url = `http://127.0.0.1:${ready.port}`;
     const get = route => fetch(url + route).then(r => r.text());
     const health = () => fetch(url + '/__codex_claude_local/health').then(r => r.json());
+    const duplicate = spawn(process.execPath, [path.join(root, 'service.mjs')], {
+      env: { ...process.env, CLAUDE_LOCAL_SERVICE_CONFIG: path.join(root, 'service-config.json'), CLAUDE_LOCAL_INSTANCE_ID: 'duplicate' },
+      stdio: 'ignore',
+    });
+    assert.equal((await once(duplicate, 'exit'))[0], 1, 'a second manager cannot create a concurrent writer');
+    assert.equal((await health()).pid, child.pid);
     child.stdin.end(); // manager update/exit must not affect the service
     assert.equal(await get('/busy'), 'first');
     const original = await health();

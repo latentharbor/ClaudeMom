@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +15,10 @@ const ready = path.join(root, 'ready.json');
 const stopFile = path.join(root, 'service-stop.json');
 const instanceId = process.env.CLAUDE_LOCAL_INSTANCE_ID;
 const requestedPort = Number(process.env.CLAUDE_LOCAL_SERVICE_PORT || 0);
+// OS ownership outlives the GUI and is released only after the core exits.
+// A separate owner cannot start another writer during startup/adoption races.
+const ownershipPort = 20000 + crypto.createHash('sha256').update(fs.realpathSync(root)).digest().readUInt16BE(0) % 20000;
+const ownership = net.createServer(socket => socket.destroy());
 let current, wanted, worker, workerPort, workerHealth = {}, lastReport = 0, safe = false;
 let activeRequests = 0, switching = true, stopping = false, lastError = null;
 let approvedCoreRevision = null;
@@ -42,7 +47,7 @@ function candidate() {
 }
 function health() {
   return { ...workerHealth, schema: 1, serviceProtocol: 1, pid: process.pid,
-    workerPid: worker?.pid, port: server.address()?.port, mode: 'mock', instanceId,
+    workerPid: worker?.pid, port: server.address()?.port, ownershipPort, mode: 'mock', instanceId,
     configHash: current?.revision, pendingConfigHash: wanted?.revision !== current?.revision ? wanted?.revision : null,
     coreRevision: current?.coreRevision, pendingCoreRevision: wanted?.coreRevision !== current?.coreRevision ? wanted?.coreRevision : null,
     bridgeFresh: Date.now() - lastReport < 5000, activeRequests,
@@ -213,16 +218,23 @@ function shutdown() {
   if (stopping) return;
   stopping = true;
   clearInterval(timer);
-  server.close();
+  if (server.listening) server.close();
   for (const socket of tunnels) socket.destroy();
-  if (worker?.connected) worker.send({ type: 'shutdown' });
-  else worker?.kill('SIGTERM');
-  setTimeout(() => process.exit(0), 1000).unref();
+  const finish = () => {
+    if (ownership.listening) ownership.close(() => process.exit(process.exitCode || 0));
+    else process.exit(process.exitCode || 0);
+  };
+  if (worker && worker.exitCode === null) {
+    worker.once('exit', finish);
+    if (worker.connected) worker.send({ type: 'shutdown' });
+    else worker.kill('SIGTERM');
+    setTimeout(() => worker?.kill('SIGKILL'), 2000).unref();
+  } else finish();
 }
-server.listen(requestedPort, '127.0.0.1', async () => {
+function listen() { server.listen(requestedPort, '127.0.0.1', async () => {
   try { wanted = candidate(); await boot(wanted); receipt(); }
   catch (error) { console.error('Local service startup failed:', error.stack); shutdown(); process.exitCode = 1; }
-});
+}); }
 let reconciling = false;
 const timer = setInterval(async () => {
   if (reconciling) return;
@@ -236,4 +248,10 @@ const timer = setInterval(async () => {
   } finally { reconciling = false; }
 }, 500);
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
+ownership.once('error', () => {
+  console.error('Independent service ownership is already held; refusing a second state writer.');
+  process.exitCode = 1;
+  shutdown();
+});
+ownership.listen(ownershipPort, '127.0.0.1', listen);
 // stdin intentionally has no lifecycle role. GUI updates must not stop tasks.

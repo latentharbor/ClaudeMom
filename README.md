@@ -64,6 +64,10 @@ ClaudeMom 是一种**新的接入方式**：在本机把你的 API Key **变成�
 
 ## 开发
 
+0.1.11 起，代理独立于管理窗口运行。安装迁移时，可在 ClaudeMom 尚未运行且
+Claude 已退出后，用 `open -n -a ClaudeMom --args --launch-claude` 同时启动管理器
+和受管 Claude。该入口不会关闭已有的 Claude；停止服务仍通过管理器的“停止”操作。
+
 ```bash
 cd apps/claude-mom
 npm install
