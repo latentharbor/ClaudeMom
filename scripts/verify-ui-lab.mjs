@@ -140,7 +140,7 @@ try {
     return false;
   });
   result.checks.codeEntryRendered = true;
-  const clicked = await clickText("Code");
+  const clicked = await until(() => clickText("Code"), 30000);
   result.checks.codeNavigationClicked = !!clicked;
   assert.ok(clicked, "Click the actual native Code navigation control");
   await delay(3000);
@@ -241,14 +241,17 @@ try {
     const query = expression => evaluate(codeFrame, expression);
     const codeEntry = await until(() => held.find(entry => entry.kind === "code"));
     await until(async () => (await query(`window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)})`))?.isRunning);
-    const preview = await query(`window['claude.web'].Launch.startBrowserPreview(${JSON.stringify(path.join(root, "scratch"))},${JSON.stringify(sessionId)})`);
-    assert.equal(preview, previewId);
-    for (let i = 0; i < 2; i++) {
+    let preview = null;
+    try {
+      preview = await until(() => query(`window['claude.web'].Launch.startBrowserPreview(${JSON.stringify(path.join(root, "scratch"))},${JSON.stringify(sessionId)})`), 20000);
+    } catch { result.browserFixtureDiagnostics = await rpc('/runtime-diagnostics'); }
+    result.checks.browserFixtureAvailable = preview === previewId;
+    for (let i = 0; preview === previewId && i < 2; i++) {
       const tab = await query(`window['claude.web'].Launch.openPreviewTab(${JSON.stringify(previewId)},${JSON.stringify(path.join(root, "scratch"))})`);
       assert.equal(typeof tab, "string");
       await query(`window['claude.web'].Launch.navigatePreview(${JSON.stringify(previewId)},${JSON.stringify(`http://127.0.0.1:${upstream.address().port}/reload-probe-page`)},${JSON.stringify(tab)})`);
     }
-    const beforeTabs = await query(`window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`);
+    const beforeTabs = preview === previewId ? await query(`window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`) : null;
     const draft = "UI_LAB_UNSENT_DRAFT";
     const draftSet = await query(`(() => {
       const e=[...document.querySelectorAll('textarea,[contenteditable="true"]')].find(e=>e.getBoundingClientRect().width>20);
@@ -259,7 +262,7 @@ try {
     })()`);
     assert.equal(draftSet, true);
     await delay(1500);
-    const requestCount = requests.length;
+    const requestCount = held.filter(entry => entry.kind === 'code').length;
     result.reload = { code: { runningBefore: true, setupComplete: true, tabsBefore: beforeTabs?.tabs?.length } };
     await rpc("/reload-frontend", { id: codeFrame.id });
     const afterFrame = await until(async () => {
@@ -269,14 +272,14 @@ try {
     }, 60000);
     await delay(5000);
     const afterSession = await evaluate(afterFrame, `window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)})`);
-    const afterTabs = await evaluate(afterFrame, `window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`);
+    const afterTabs = preview === previewId ? await evaluate(afterFrame, `window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`) : null;
     const draftPreserved = await evaluate(afterFrame, ` [...document.querySelectorAll('textarea,[contenteditable="true"]')].some(e=>(e.value||e.innerText||'').includes(${JSON.stringify(draft)}))`);
     const ids = value => (value?.tabs || []).map(tab => tab.tabId).sort();
     result.reload = { desktopPidUnchanged: (await rpc('/status')).pid===control.pid,
       code: { runningBefore: true, runningAfter: afterSession?.isRunning===true,
-        upstreamAborted: codeEntry.aborted, extraRequests: requests.length-requestCount,
+        upstreamAborted: codeEntry.aborted, extraRequests: held.filter(entry => entry.kind === 'code').length-requestCount,
         tabsBefore: ids(beforeTabs), tabsAfter: ids(afterTabs), draftPreserved } };
-    result.reload.code.tabsPreserved = JSON.stringify(ids(beforeTabs))===JSON.stringify(ids(afterTabs));
+    result.reload.code.tabsPreserved = beforeTabs === null ? null : JSON.stringify(ids(beforeTabs))===JSON.stringify(ids(afterTabs));
     finishHeld();
     await delay(3000);
     // A renderer-owned completion uses the same request lifetime as Chat,

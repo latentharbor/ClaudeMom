@@ -62,6 +62,12 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ pid: process.pid, data: app.getPath("userData"),
         frames: entries.map(({ id, wc, frame }) => ({ id, url: frame.url, contentsId: wc.id })) }));
     }
+    if (req.method === "GET" && req.url === "/runtime-diagnostics") {
+      const core = require("./.vite/build/index.chunk-xV3fJhc7.js");
+      return res.end(JSON.stringify({ browserEnabled: core._Z(),
+        browserFeature: core.Kdt("17519066"), launchEnabled: core.Dft("launchEnabled"),
+        coworkBrowserToolsEnabled: core.Dft("coworkBrowserToolsEnabled") }));
+    }
     let raw = "";
     for await (const part of req) { raw += part; if (raw.length > 65536) throw Error("Command too large"); }
     const payload = JSON.parse(raw);
