@@ -180,7 +180,7 @@ before(async () => {
   });
   fs.mkdirSync(path.join(root, "runtime", "scripts"), { recursive: true });
   fs.cpSync(path.join(here,'third-party'),path.join(root,'runtime/third-party'),{recursive:true});
-  for(const file of ['projects-ds-api.mjs','projects-ds-core.mjs','projects-protocol.mjs','projects-worktree.mjs'])fs.copyFileSync(path.join(here,file),path.join(root,'runtime',file));
+  for(const file of ['projects-cli.mjs','projects-ds-api.mjs','projects-ds-core.mjs','projects-protocol.mjs','projects-worktree.mjs'])fs.copyFileSync(path.join(here,file),path.join(root,'runtime',file));
   for (const file of ["proxy.mjs", "projects-local.mjs", "projects-runner.mjs", "projects-job.mjs", "projects-schedule.mjs", "projects-mcp.mjs", "projects-ui.js", "hot-runtime.mjs", "local-policy.mjs", "runtime-bridge.js", "service.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "desktop-ui.mjs", "ui-resources.mjs", "site-policy.mjs", "browser-site-consent.js", "scripts/patch-dictation-start.mjs"]) {
     fs.copyFileSync(path.join(here, file), path.join(root, "runtime", file));
   }
@@ -1409,6 +1409,20 @@ test("runtime config parses model names and bad data falls back", () => {
   assert.equal(ok.modelNames["jojo/gpt-6.1-sol"].name, "gpt-6.1-sol");
   assert.deepEqual(runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: "not json" }).modelNames, {});
   assert.deepEqual(runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: '{"a/b":{"name":5}}' }).modelNames, {});
+});
+
+test('production local Projects setting exposes owned storage and reports missing bundled CLI',async()=>{
+  const instance=await start({CLAUDE_LOCAL_PROJECTS:'1',CLAUDE_LOCAL_PROJECTS_LAB:'0',CLAUDE_LOCAL_PROJECTS_CLI_CACHE:path.join(root,'empty-desktop-cli-cache')});
+  try{
+    const bootstrap=await request(instance,'/api/bootstrap',{host:'claude.ai'});
+    assert.equal(bootstrap.json.local_projects_backend.official_cloud,false);
+    const created=await request(instance,'/v1/code/channels',{body:{name:'Production setting fixture'}});
+    assert.equal(created.status,201);
+    const channel=created.json.channel.id;
+    const result=await request(instance,`/v1/code/channels/${channel}/messages`,{body:{body:'Do not invoke inference without the bundled CLI',client_message_id:'cmsg_unavailable_cli'}});
+    assert.equal(result.status,503);assert.match(result.json.error.message,/Code tab/);
+    assert.equal((await request(instance,`/v1/code/channels/${channel}/local`)).json.jobs.length,0);
+  }finally{await stop(instance,true);}
 });
 
 test("model selectors use friendly names and fall back to ids", () => {

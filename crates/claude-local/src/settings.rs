@@ -11,6 +11,8 @@ pub struct ClaudeLocalSettings {
     pub allow_all_browser_sites: bool,
     /// Local device extension admission, separate from organization policy.
     pub allow_local_extensions: bool,
+    /// Local Projects execution and storage, separate from official cloud Projects.
+    pub local_projects: bool,
     pub computer_use: bool,
     pub background_mode: bool,
     /// 无视 Claude 对后台模式的 macOS 版本上限（新系统上 Claude 会提示「暂不支持」，默认关）。
@@ -62,6 +64,7 @@ impl Default for ClaudeLocalSettings {
             voice_input: true,
             allow_all_browser_sites: false,
             allow_local_extensions: true,
+            local_projects: false,
             computer_use: false,
             background_mode: false,
             force_background_mode: false,

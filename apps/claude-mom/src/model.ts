@@ -40,6 +40,7 @@ export type ClaudeConfig = {
   voiceInput: boolean;
   allowAllBrowserSites?: boolean;
   allowLocalExtensions?: boolean;
+  localProjects?: boolean;
   computerUse: boolean;
   backgroundMode: boolean;
   /** 无视 Claude 对后台模式的 macOS 版本上限。 */

@@ -40,7 +40,8 @@ ClaudeMom 是一种**新的接入方式**：在本机把你的 API Key **变成�
 - **语音输入**：本地离线听写（SenseVoice），音频不出本机
 - **电脑控制 / 后台模式**：较新的 macOS 上 Claude 会提示「暂不支持后台模式」，高级里有开关可以解除版本限制（默认关）
 - **Code 页签和命令行共用 `~/.claude`**：终端、其他工具里建的 Claude Code 会话也会出现在 Desktop 左侧列表
-- **自动更新**；macOS 版已签名 + 公证，下载即可打开
+- **本地 Projects（macOS，可选）**：保留官方界面，用 DS Project 核心协调并行线程、独立 Git worktree、Library、记忆和计划任务；推理走所选上游，工具操作保留权限确认
+- **自动更新**；当前定制发行包适用于 Apple Silicon Mac，采用 ad-hoc 签名，未进行 Apple 公证
 
 <img src="docs/images/claudemom.png" alt="ClaudeMom 主界面" width="640">
 
@@ -54,6 +55,15 @@ ClaudeMom 是一种**新的接入方式**：在本机把你的 API Key **变成�
 4. 点「启动 Claude」，进去就是登录版界面
 
 欢迎提 issue 和 PR，一起把 Claude 桌面版用得更顺手！
+
+本地 Projects 默认关闭，在 ClaudeMom 的 Claude 设置中启用。首次请先在 Code 页启动一次任务，
+让 Desktop 准备内置 CLI。项目数据默认存放于 `~/.claude-mom/claude-local/projects-lab/`，
+包含 DS Project 状态、Library、记忆、每线程工作区、CLI 历史和任务记录。它不是官方云端
+Projects：不提供云端协作或跨设备同步；计划任务只有在本机兼容服务运行时才会执行。
+退出管理器不会停止独立代理，显式停止本地服务则会暂停项目调度。
+
+核心来源及许可证见 `runtime/third-party/ds-project/UPSTREAM.md`（MIT）和
+`runtime/third-party/dsh-projects/UPSTREAM.md`（Apache-2.0），路径均相对于 `crates/claude-local/`。
 
 ## 结构
 

@@ -23,7 +23,8 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     const results=body.messages.flatMap(m=>Array.isArray(m.content)?m.content.filter(c=>c.type==='tool_result'):[]);
     if(JSON.stringify(results).includes('OWNED_LIBRARY_REFERENCE'))readMarkers.add(marker);
     let content;
-    if(current.includes('Project worker report:'))content=[{type:'text',text:'COORDINATOR_SUMMARY'}];
+    if(current.includes('RESUME_CANCELLED'))content=[{type:'text',text:'RESUMED_CANCELLED_SESSION'}];
+    else if(current.includes('Project worker report:'))content=[{type:'text',text:'COORDINATOR_SUMMARY'}];
     else if(current.includes('COORDINATOR_WORKER_'))content=[{type:'text',text:'COORDINATOR_CHILD_DONE'}];
     else if(current.includes('COORDINATE_TWO'))content=results.length?[{type:'text',text:'COORDINATOR_STARTED'}]:[
       {type:'tool_use',id:'toolu_start_a',name:'mcp__local_project__start_thread_session',input:{title:'Auto A',prompt:'COORDINATOR_WORKER_A'}},
@@ -72,6 +73,12 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     await request(base+'/threads/'+cancel.id+'/cancel','POST',{});
     await until(()=>backend.snapshot().jobs.find(j=>j.thread_root_id===cancel.id).state==='cancelled');
     assert.equal(fs.existsSync(path.join(workspace(cancel.id),'CANCEL_TOOL.txt')),false);
+    const cancelledSession=backend.snapshot().jobs.find(j=>j.thread_root_id===cancel.id).session_id;
+    await request(base+'/messages','POST',{body:'RESUME_CANCELLED',in_reply_to_message_id:cancel.id,client_message_id:'cmsg_resume_cancelled'});
+    await until(()=>backend.snapshot().jobs.filter(j=>j.thread_root_id===cancel.id).at(-1).state==='completed');
+    const resumed=backend.snapshot().jobs.filter(j=>j.thread_root_id===cancel.id).at(-1);
+    assert.equal(resumed.session_id,cancelledSession,'cancellation preserves the existing CLI session');
+    assert.match(resumed.result,/RESUMED_CANCELLED_SESSION/);
     const auto=(await request('/v1/code/channels','POST',{name:'Coordinator fixture'})).channel;
     await request('/v1/code/channels/'+auto.id+'/messages','POST',{body:'COORDINATE_TWO',client_message_id:'cmsg_coordinator_fixture'});
     await until(()=>backend.snapshot().threads.filter(t=>t.channel_id===auto.id).length===2);

@@ -1,5 +1,5 @@
 // Claude Desktop's channel API over DS Project's actual engine and Library.
-// This facade is enabled only by the isolated lab build.
+// Enabled by the explicit local Projects setting or the isolated lab build.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -256,7 +256,7 @@ export function createLocalProjects(options) {
       if(url.searchParams.get('thread_roots_only')==='true')rows=rows.filter(m=>m.thread_root_id===m.id);return json(res,page(rows));
     }
     if(suffix==='/messages'&&method==='POST'){const input=await body(req);if(typeof input.body!=='string'||!input.body.trim())throw Error('A message is required');
-      if(!runner)return json(res,{error:{message:'Local CLI executor is unavailable'}},503);
+      if(!runner||runner.available?.()===false)return json(res,{error:{message:'Open the Code tab once to prepare the bundled CLI for local Projects'}},503);
       const result=await core.send(p,input.body,input.client_message_id||crypto.randomUUID(),input.in_reply_to_message_id);
       return json(res,{message_id:messageId(result.messageId),...input.in_reply_to_message_id?{thread_root_id:input.in_reply_to_message_id}:{}});
     }

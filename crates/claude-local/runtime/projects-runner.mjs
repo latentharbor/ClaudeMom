@@ -18,7 +18,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     const env={};for(const name of ['PATH','HOME','USER','LOGNAME','SHELL','LANG','LC_ALL','TZ']) {
       if(process.env[name])env[name]=process.env[name];
     }
-    return{...env,CFFIXED_USER_HOME:profileHome,CLAUDE_CONFIG_DIR:configDir,TMPDIR:tmp,
+    return{...env,CFFIXED_USER_HOME:profileHome,CLAUDE_CONFIG_DIR:configDir,TMPDIR:tmp,CLAUDE_CODE_TMPDIR:tmp,
       ANTHROPIC_BASE_URL:typeof baseUrl==='function'?baseUrl():baseUrl,
       ANTHROPIC_API_KEY:clientKey,ANTHROPIC_AUTH_TOKEN:clientKey,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',DISABLE_AUTOUPDATER:'1',CI:'1'};
@@ -43,6 +43,8 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     if(!/^[0-9a-f-]{36}$/i.test(sessionId))throw Error('Invalid project session');
     if(!/^(?:coordinator|cmsg_[A-Za-z0-9_-]{1,120})$/.test(lane)||!['worker','coordinator'].includes(role))throw Error('Invalid project lane');
     if(active.size>=4)throw Error('Local project concurrency limit reached');
+    const executable=typeof binary==='function'?binary():binary;
+    if(typeof executable!=='string'||!path.isAbsolute(executable))throw Error('Open the Code tab once to prepare the bundled CLI for local Projects');
     const id=jobId,project=path.join(directory,projectId),jobDir=path.join(project,'jobs',id);
     const cwd=workspace||path.join(project,'workspaces',lane),configDir=path.join(project,'cli',sessionId),tmp=path.join(jobDir,'tmp');
     for(const dir of [jobDir,cwd,configDir,tmp])fs.mkdirSync(dir,{recursive:true,mode:0o700});
@@ -63,8 +65,11 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     const api=typeof baseUrl==='function'?baseUrl():baseUrl;
     privateJSON(path.join(jobDir,'mcp.json'),{mcpServers:toolToken?{local_project:{command:process.execPath,
       args:[path.join(here,'projects-mcp.mjs')],env:{LOCAL_PROJECT_ORIGIN:api,LOCAL_PROJECT_TOKEN:toolToken,LOCAL_PROJECT_JOB:id,LOCAL_PROJECT_ROLE:role}}}:{}});
+    const transcripts=path.join(configDir,'projects');
+    const savedTranscript=fs.existsSync(transcripts)&&fs.readdirSync(transcripts,{withFileTypes:true}).some(d=>
+      d.isDirectory()&&fs.existsSync(path.join(transcripts,d.name,sessionId+'.jsonl')));
     const args=['--print','--verbose','--output-format','json','--model',model,'--effort',effort,
-      ...(resume?['--resume',sessionId]:['--session-id',sessionId]),
+      ...(resume||savedTranscript?['--resume',sessionId]:['--session-id',sessionId]),
       '--setting-sources','','--strict-mcp-config','--mcp-config',path.join(jobDir,'mcp.json'),
       '--tools',role==='coordinator'?'':'Bash,Read,Write,Edit,Glob,Grep',
       '--permission-mode','default',
@@ -72,7 +77,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
         'mcp__local_project__start_thread_session,mcp__local_project__list_thread_sessions,mcp__local_project__send_message,mcp__local_project__fetch_messages,mcp__local_project__list_project_files,mcp__local_project__read_project_file,mcp__local_project__read_memory,mcp__local_project__write_memory,mcp__local_project__create_schedule,mcp__local_project__list_schedules,mcp__local_project__project_launch_task,mcp__local_project__project_list_threads,mcp__local_project__project_send_to_thread,mcp__local_project__project_update_thread,mcp__local_project__project_read_context,mcp__local_project__project_read_activity,mcp__local_project__project_search_history,mcp__local_project__project_remember,mcp__local_project__project_forget,mcp__local_project__project_memory_file,mcp__local_project__project_finish_task,mcp__local_project__project_publish_file']:[]),
       '--settings',JSON.stringify({sandbox:{enabled:false}})];
     privateJSON(path.join(jobDir,'status.json'),{schema:1,id,sessionId,state:'starting',createdAt:new Date().toISOString()});
-    privateJSON(path.join(jobDir,'launch.json'),{id,sessionId,binary,args,prompt:prompt+`\n\nProject Library snapshot: ${libraryRoot}`,cwd,
+    privateJSON(path.join(jobDir,'launch.json'),{id,sessionId,binary:executable,args,prompt:prompt+`\n\nProject Library snapshot: ${libraryRoot}`,cwd,
       controlToken:toolToken||crypto.randomBytes(24).toString('hex'),env:{...environment(configDir,tmp),MCP_TOOL_TIMEOUT:'86400000'}});
     // The controller journals ownership before any external tool can execute.
     onPrepared({id,sessionId,directory:jobDir,workspace:cwd});

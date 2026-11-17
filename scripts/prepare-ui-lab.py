@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--upstreams', required=True, type=Path)
     parser.add_argument('--cli-cache', type=Path)
     parser.add_argument('--web-cache', type=Path)
+    parser.add_argument('--local-projects', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     root = Path.home() / '.claude-mom-ui-lab'
@@ -112,7 +113,7 @@ def main():
     settings = {'enabled': True, 'localization': False, 'voiceInput': False, 'computerUse': False,
         'backgroundMode': False, 'cowork': True, 'displayName': 'UI Lab', 'email': 'ui-lab@localhost',
         'plan': 'ultra', 'codeShareHome': False, 'importCliSessions': False, 'sessionSync': False,
-        'hideUnroutedModels': True}
+        'hideUnroutedModels': True, 'localProjects': args.local_projects}
     (root / 'settings.json').write_text(json.dumps({'claudeDesktopLocal': settings}))
     home = root / 'profile-home'
     user_data = home / 'Library/Application Support/Claude'

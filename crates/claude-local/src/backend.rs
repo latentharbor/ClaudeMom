@@ -58,6 +58,7 @@ pub struct TemplateVersion {
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("projects-cli.mjs", include_bytes!("../runtime/projects-cli.mjs")),
     ("projects-ds-api.mjs", include_bytes!("../runtime/projects-ds-api.mjs")),
     ("projects-ds-core.mjs", include_bytes!("../runtime/projects-ds-core.mjs")),
     ("projects-protocol.mjs", include_bytes!("../runtime/projects-protocol.mjs")),
@@ -1991,6 +1992,8 @@ fn start_backend(
         .arg(root.join("ca"))
         .current_dir(root)
         .env("CLAUDE_LOCAL_MANAGED", "1")
+        .env("CLAUDE_LOCAL_PROJECTS", flag(config.local_projects && cfg!(target_os = "macos")))
+        .env("CLAUDE_LOCAL_PROJECTS_CLI_CACHE", profile_sets().first().map(|set| set.data.join("claude-code")).unwrap_or_default())
         .env("CLAUDE_LOCAL_PROJECTS_LAB", flag(host().isolated_desktop_app().is_some()
             && std::env::var("CLAUDE_MOM_PROJECTS_LAB").is_ok_and(|v| v=="1")))
         // 代理脚本按这个目录找听写凭据（变量名沿用 Codex++ 的，脚本两边共用）。
@@ -3933,6 +3936,7 @@ RGvMS5OzZFvnFlekIHE6c+6QK9QtWD7P+PkIpRa1D01cb9SwsRHqGfs7o2UbaZxs\n\
         let value = serde_json::to_value(config).unwrap();
         assert_eq!(value["voiceInput"], true);
         assert_eq!(value["allowAllBrowserSites"], false);
+        assert_eq!(value["localProjects"], false);
         assert_eq!(value["backgroundMode"], true);
         assert_eq!(value["forceBackgroundMode"], false);
         assert_eq!(value["cowork"], true);
@@ -3940,6 +3944,9 @@ RGvMS5OzZFvnFlekIHE6c+6QK9QtWD7P+PkIpRa1D01cb9SwsRHqGfs7o2UbaZxs\n\
         let legacy: ClaudeLocalSettings = serde_json::from_value(json!({ "enabled": true })).unwrap();
         assert!(legacy.cowork);
         assert!(!legacy.allow_all_browser_sites);
+        assert!(!legacy.local_projects);
+        let projects: ClaudeLocalSettings = serde_json::from_value(json!({ "localProjects": true })).unwrap();
+        assert!(projects.local_projects);
         let opted_in: ClaudeLocalSettings =
             serde_json::from_value(json!({ "allowAllBrowserSites": true })).unwrap();
         assert!(opted_in.allow_all_browser_sites);

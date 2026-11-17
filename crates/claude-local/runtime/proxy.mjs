@@ -35,6 +35,7 @@ import { createSitePolicyHandler, isSitePolicyUrl } from "./site-policy.mjs";
 import { createHotRuntime, requestSession, constantToken, validateTaskReport } from './hot-runtime.mjs';
 import { localCloudAccess, extensionInstallPolicy, isFakeIp } from './local-policy.mjs';
 import { createLocalProjects } from './projects-local.mjs';
+import { findProjectCLI } from './projects-cli.mjs';
 import { createProjectRunner } from './projects-runner.mjs';
 import dns from 'node:dns';
 
@@ -50,7 +51,7 @@ let quiescing = false;
 let pendingCoreRevision = null;
 let uiAppliedRevision = null;
 let localProjects = null, localProjectTasks = 0;
-const projectsLab = process.env.CLAUDE_LOCAL_PROJECTS_LAB === '1';
+const projectsLab = process.env.CLAUDE_LOCAL_PROJECTS === '1' || process.env.CLAUDE_LOCAL_PROJECTS_LAB === '1';
 let networkWarning = null;
 if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') dns.lookup('example.com', { all: true }, (error, addresses) => {
   if (!error && addresses.some(entry => isFakeIp(entry.address))) {
@@ -566,19 +567,10 @@ const conversationService = createConversationService({
 });
 if(projectsLab) {
   const directory=path.join(APP_STATE_DIR,'projects-lab'),profileHome=path.join(APP_STATE_DIR,'profile-home');
-  const cache=path.join(profileHome,'Library/Application Support/Claude/claude-code');
-  let binary;
-  try{for(const version of fs.readdirSync(cache).sort().reverse()) {
-    if(!/^\d+\.\d+\.\d+$/.test(version))continue;
-    for(const hash of fs.readdirSync(path.join(cache,version))) {
-      if(!/^[a-f0-9]+$/.test(hash))continue;
-      const candidate=path.join(cache,version,hash,'claude.app/Contents/MacOS/claude');
-      if(fs.existsSync(candidate)){binary=candidate;break;}
-    }
-    if(binary)break;
-  }}catch{}
-  const runner=binary?createProjectRunner({directory:path.join(directory,'execution'),binary,clientKey,profileHome,
-    baseUrl:()=>`http://127.0.0.1:${process.env.CLAUDE_LOCAL_PUBLIC_PROXY_PORT||listeningPort}`}):undefined;
+  const cache=process.env.CLAUDE_LOCAL_PROJECTS_CLI_CACHE||path.join(profileHome,'Library/Application Support/Claude/claude-code');
+  const runner=createProjectRunner({directory:path.join(directory,'execution'),binary:()=>findProjectCLI(cache),clientKey,profileHome,
+    baseUrl:()=>`http://127.0.0.1:${process.env.CLAUDE_LOCAL_PUBLIC_PROXY_PORT||listeningPort}`});
+  runner.available=()=>!!findProjectCLI(cache);
   localProjects=createLocalProjects({directory,accountId:ACCOUNT.uuid,models:()=>hot.current,clientKey,runner,
     onActiveChange:count=>{localProjectTasks=count;writeReady();},onTaskFinished:session=>hot.confirmIdle([session])});
 }

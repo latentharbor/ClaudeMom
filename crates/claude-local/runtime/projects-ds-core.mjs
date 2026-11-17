@@ -52,14 +52,14 @@ export class LocalDSProjects {
     this.engine.store.save();return p;
   }
   async launch(p,input,key=crypto.randomUUID(),source='user',origin) {
-    if(!this.runner)throw Error('The local CLI executor is unavailable');
+    if(!this.runner||this.runner.available?.()===false)throw Error('Open the Code tab once to prepare the bundled CLI for local Projects');
     if(this.meta.jobs.filter(j=>busy(j.state)).length>=32)throw Error('The local project queue is full');
     const result=await this.engine.launch(p.id,{title:input.title||input.name,brief:input.prompt||input.body,kind:'execute',
       sourceThreadId:origin?.id||p.mainThreadId,requestId:source+':'+key});
     return this.engine.store.thread(result.taskId);
   }
   async send(p,input,key=crypto.randomUUID(),root) {
-    if(!this.runner)throw Error('The local CLI executor is unavailable');
+    if(!this.runner||this.runner.available?.()===false)throw Error('Open the Code tab once to prepare the bundled CLI for local Projects');
     const t=root?this.thread(root,p):this.engine.store.thread(p.mainThreadId);
     return this.engine.send(t.id,input,'user:'+key);
   }

@@ -45,7 +45,7 @@ jobs:
         working-directory: crates/claude-local/runtime
         run: |
           bash scripts/gen-ca.sh
-          node --test --test-timeout=120000 hot-runtime.test.mjs runtime-bridge.test.mjs local-policy.test.mjs service.test.mjs browser-site-consent.test.mjs site-policy.test.mjs managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs scripts/*.test.mjs
+          node --test --test-timeout=120000 hot-runtime.test.mjs runtime-bridge.test.mjs local-policy.test.mjs service.test.mjs browser-site-consent.test.mjs site-policy.test.mjs managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs projects-cli.test.mjs projects-local.test.mjs projects-engine.test.mjs projects-protocol.test.mjs projects-migration.test.mjs scripts/*.test.mjs
 
       - name: release 编译
         run: cargo build --release -p claude-mom

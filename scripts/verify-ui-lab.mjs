@@ -80,7 +80,7 @@ const upstreamFile = path.join(output, "fixture-upstreams.json");
 fs.writeFileSync(upstreamFile, JSON.stringify(profiles), { mode: 0o600 });
 execFileSync("python3", ["scripts/prepare-ui-lab.py", "--source", officialApp, "--reference", reference,
   "--ca", ca, "--upstreams", upstreamFile, "--cli-cache", cliCache,
-  ...(webCache ? ["--web-cache", webCache] : [])], { stdio: "inherit" });
+  ...(webCache ? ["--web-cache", webCache] : []), ...(projectsProbe ? ['--local-projects'] : [])], { stdio: "inherit" });
 fs.unlinkSync(upstreamFile);
 let managerOutput = "";
 let child = spawn(path.join(manager, "Contents/MacOS/claude-mom"), ["--lab-run"], { stdio: ["pipe", "pipe", "pipe"] });
