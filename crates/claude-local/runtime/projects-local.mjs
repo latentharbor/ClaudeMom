@@ -29,16 +29,16 @@ async function body(req) {
 const page = data => ({ data, has_more:false, next_cursor:null });
 const text = (value, limit) => typeof value === 'string' ? value.trim().slice(0,limit) : '';
 
-export function createLocalProjects({ directory, accountId, models, clientKey, coordinator, onActiveChange = () => {} }) {
+export function createLocalProjects({ directory, accountId, models, clientKey, coordinator, runner, onActiveChange = () => {} }) {
   fs.mkdirSync(directory, { recursive:true, mode:0o700 });
   const file = path.join(directory,'projects.json');
-  let data = { schema:1, channels:[], messages:[], memories:[] };
+  let data = { schema:1, channels:[], messages:[], memories:[], jobs:[] };
   if (fs.existsSync(file)) {
     const stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32*1024*1024) throw Error('Invalid project store');
     const saved = JSON.parse(fs.readFileSync(file));
     if (saved.schema !== 1 || !['channels','messages','memories'].every(k=>Array.isArray(saved[k]))) throw Error('Invalid project store schema');
-    data = saved;
+    data = {...saved,jobs:Array.isArray(saved.jobs)?saved.jobs:[]};
   }
   const listeners = new Map(), requests = [];
   const save = () => {
@@ -63,6 +63,49 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
     notify(channel,{type:'channel_message',...row});
     return row;
   }
+  let closed=false;
+  const observed=new Set();
+  const active=()=>data.jobs.filter(j=>j.state==='queued'||j.state==='running').length;
+  const changed=()=>onActiveChange(active());
+  function settle(job,result) {
+    if(closed)return;
+    observed.delete(job.id);
+    job.state=result.state;job.finished_at=now();
+    if(!data.messages.some(m=>m.result_job_id===job.id))message(job.channel_id,{
+      body:result.state==='completed'?result.result:'Local project execution stopped. Its private job record contains the failure details.',
+      author_session_id:job.session_id,result_job_id:job.id,
+      ...(job.thread_root_id?{thread_root_id:job.thread_root_id,in_reply_to_message_id:job.thread_root_id}:{})});
+    save();changed();pump();
+  }
+  function pump() {
+    if(!runner||closed)return;
+    for(const job of data.jobs) {
+      if(job.state!=='queued'||runner.active()>=4||data.jobs.some(j=>j.state==='running'&&j.channel_id===job.channel_id))continue;
+      const channel=find(job.channel_id),input=data.messages.find(m=>m.id===job.input_id);
+      if(!channel||!input){job.state='failed';save();continue;}
+      const history=data.messages.filter(m=>m.channel_id===channel.id&&m.created_at<=input.created_at).slice(-20)
+        .map(m=>`${m.author_account_id?'User':'Assistant'}: ${m.body}`).join('\n').slice(-100000);
+      const prompt=`This is a locally hosted project. Work only in the supplied project workspace.\nProject: ${channel.name}\nInstructions:\n${channel.system_prompt_addendum||''}\nRecent conversation:\n${history}\n\nCurrent request:\n${input.body}`;
+      try{
+        const task=runner.run({projectId:channel.id,prompt,model:job.model,sessionId:job.session_id,
+          resume:data.jobs.some(j=>j.id!==job.id&&j.session_id===job.session_id&&j.state==='completed')});
+        job.state='running';job.directory=task.directory;job.started_at=now();save();changed();
+        observed.add(job.id);void task.done.then(result=>settle(job,result));
+      }catch{job.state='failed';save();changed();}
+    }
+  }
+  // A core restart observes existing detached hosts; it never replays a tool
+  // operation whose outcome is unknown. Queued (not started) work can start.
+  if(runner)queueMicrotask(()=>{
+    for(const job of data.jobs.filter(j=>j.state==='running')) {
+      const jobsRoot=path.resolve(directory,'execution');
+      if(typeof job.directory!=='string'||!path.resolve(job.directory).startsWith(jobsRoot+path.sep)) {
+        job.state='failed';continue;
+      }
+      observed.add(job.id);runner.observe(job.directory,result=>settle(job,result));
+    }
+    save();changed();pump();
+  });
   function stream(channel, req, res) {
     res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-store',connection:'keep-alive'});
     res.write('event: keep_alive\ndata: {}\n\n');
@@ -131,7 +174,8 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
         return json(res,page(rows));
       }
       if(suffix==='/messages'&&method==='POST') {
-        if(!coordinator)return json(res,{error:{message:'The local coordinator is not connected yet'}},503);
+        if(!coordinator&&!runner)return json(res,{error:{message:'The local coordinator is not connected yet'}},503);
+        if(active()>=32)return json(res,{error:{message:'The local project queue is full'}},429);
         const input=await body(req),content=text(input.body??input.text??input.content,64000);
         if(!content)return json(res,{error:{message:'A text message is required'}},400);
         if(input.client_message_id) {
@@ -140,7 +184,16 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
         }
         const row=message(channel,{body:content,author_account_id:accountId,client_message_id:input.client_message_id,
           ...(input.in_reply_to_message_id?{in_reply_to_message_id:input.in_reply_to_message_id,thread_root_id:input.in_reply_to_message_id}:{})});
-        void coordinator({channel:c,input:row,message:(values)=>message(channel,values)});
+        if(runner) {
+          const thread=row.thread_root_id;
+          const sessionId=thread?(data.jobs.find(j=>j.thread_root_id===thread)?.session_id||crypto.randomUUID()):
+            (c.coordinator_session_id??=crypto.randomUUID());
+          data.jobs.push({id:crypto.randomUUID(),channel_id:channel,input_id:row.id,state:'queued',created_at:now(),
+            session_id:sessionId,model:thread?(c.settings?.model_id||models().model):(c.settings?.coordinator_model_id||models().model),
+            ...(thread?{thread_root_id:thread}:{})});
+          save();changed();queueMicrotask(pump);
+        }else void Promise.resolve(coordinator({channel:c,input:row,message:(values)=>message(channel,values)}))
+          .catch(()=>message(channel,{body:'The local coordinator stopped before completing this request.',server_notice:true}));
         return json(res,{message_id:row.id});
       }
       if(suffix.startsWith('/threads/')&&method==='GET') {
@@ -156,6 +209,5 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
     }
     return json(res,{error:{type:'not_found_error',message:'Local Projects endpoint is not implemented',path:p}},404);
   }
-  return {matches,handle, snapshot:()=>structuredClone(data), close:()=>{for(const peers of listeners.values())for(const res of peers)res.end();},
-    active:()=>0};
+  return {matches,handle, snapshot:()=>structuredClone(data), close:()=>{closed=true;runner?.close();for(const peers of listeners.values())for(const res of peers)res.end();},active};
 }

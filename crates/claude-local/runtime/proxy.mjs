@@ -35,6 +35,7 @@ import { createSitePolicyHandler, isSitePolicyUrl } from "./site-policy.mjs";
 import { createHotRuntime, requestSession, constantToken, validateTaskReport } from './hot-runtime.mjs';
 import { localCloudAccess, extensionInstallPolicy, isFakeIp } from './local-policy.mjs';
 import { createLocalProjects } from './projects-local.mjs';
+import { createProjectRunner } from './projects-runner.mjs';
 import dns from 'node:dns';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -561,8 +562,24 @@ const conversationService = createConversationService({
   log,
   onChange: (flush) => flush ? stateStore.flush() : stateStore.changed(),
 });
-if(projectsLab) localProjects=createLocalProjects({directory:path.join(APP_STATE_DIR,'projects-lab'),accountId:ACCOUNT.uuid,
-  models:()=>hot.current,clientKey,onActiveChange:count=>{localProjectTasks=count;writeReady();}});
+if(projectsLab) {
+  const directory=path.join(APP_STATE_DIR,'projects-lab'),profileHome=path.join(APP_STATE_DIR,'profile-home');
+  const cache=path.join(profileHome,'Library/Application Support/Claude/claude-code');
+  let binary;
+  try{for(const version of fs.readdirSync(cache).sort().reverse()) {
+    if(!/^\d+\.\d+\.\d+$/.test(version))continue;
+    for(const hash of fs.readdirSync(path.join(cache,version))) {
+      if(!/^[a-f0-9]+$/.test(hash))continue;
+      const candidate=path.join(cache,version,hash,'claude.app/Contents/MacOS/claude');
+      if(fs.existsSync(candidate)){binary=candidate;break;}
+    }
+    if(binary)break;
+  }}catch{}
+  const runner=binary?createProjectRunner({directory:path.join(directory,'execution'),binary,clientKey,profileHome,
+    baseUrl:()=>`http://127.0.0.1:${process.env.CLAUDE_LOCAL_PUBLIC_PROXY_PORT||listeningPort}`}):undefined;
+  localProjects=createLocalProjects({directory,accountId:ACCOUNT.uuid,models:()=>hot.current,clientKey,runner,
+    onActiveChange:count=>{localProjectTasks=count;writeReady();}});
+}
 
 function pushMessage(conv, msg) {
   const index = conv.chat_messages.length;

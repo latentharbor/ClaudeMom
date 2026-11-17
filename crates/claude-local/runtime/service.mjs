@@ -79,7 +79,7 @@ async function boot(next) {
   const child = spawn(process.execPath, [next.worker, '--port', '0', '--mode', 'mock', '--log', '0', '--ca', path.join(root, 'ca')], {
     env: { ...process.env, ...next.env, CLAUDE_LOCAL_CORE_WORKER: '1',
       CLAUDE_LOCAL_READY_FILE: path.join(root, 'core-ready.json'), CLAUDE_LOCAL_CONFIG_REVISION: next.revision,
-      CLAUDE_LOCAL_INSTANCE_ID: instanceId }, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      CLAUDE_LOCAL_INSTANCE_ID: instanceId, CLAUDE_LOCAL_PUBLIC_PROXY_PORT: String(server.address().port) }, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   worker = child;
   await new Promise((resolve, reject) => {

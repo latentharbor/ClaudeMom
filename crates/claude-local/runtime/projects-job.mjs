@@ -20,7 +20,10 @@ function finish(values) {
   for(const line of output.split('\n')) {
     try{const value=JSON.parse(line);if(value.type==='result')answer=value;}catch{}
   }
-  record({state:values.code===0&&answer?.is_error!==true?'completed':'failed',finishedAt:new Date().toISOString(),
+  if(!answer)try{const value=JSON.parse(output);if(value.type==='result')answer=value;}catch{}
+  fs.writeFileSync(path.join(directory,'stdout.log'),output,{mode:0o600});
+  fs.writeFileSync(path.join(directory,'stderr.log'),errors,{mode:0o600});
+  record({state:values.code===0&&answer&&answer.is_error!==true?'completed':'failed',finishedAt:new Date().toISOString(),
     result:typeof answer?.result==='string'?answer.result.slice(0,100000):'',
     usage:answer?.usage||{},...values,
     // Error text stays in the private job folder, never in a public health API.
@@ -30,7 +33,7 @@ const cli=spawn(config.binary,config.args,{cwd:config.cwd,env:config.env,stdio:[
 record({state:'running',startedAt:new Date().toISOString(),hostPid:process.pid,pid:cli.pid});
 cli.once('error',()=>finish({code:-1}));
 cli.stdout.on('data',part=>{
-  output+=part;
+  if(Buffer.byteLength(output)<=16*1024*1024)output+=part;
   if(Buffer.byteLength(output)>16*1024*1024){errors='Local job output limit reached';cli.kill('SIGTERM');}
 });
 cli.stderr.on('data',part=>{errors=(errors+part).slice(-32000);});

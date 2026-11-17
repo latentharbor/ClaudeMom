@@ -38,11 +38,19 @@ test('owned bundled CLI executes a local project tool with no Desktop process',{
   first.close();const next=createProjectRunner(options);
   try{
     const result=await new Promise(resolve=>next.observe(job.directory,resolve));
-    assert.equal(result.state,'completed',JSON.stringify(result));
+    assert.equal(result.state,'completed',JSON.stringify(result)+'\n'+fs.readFileSync(path.join(job.directory,'stdout.log'),'utf8').slice(-5000)+'\n'+fs.readFileSync(path.join(job.directory,'stderr.log'),'utf8').slice(-5000));
     assert.match(result.result,/LOCAL_PROJECT_TOOL_FINISHED/);
     assert.equal(fs.readFileSync(path.join(job.workspace,'PROJECT_EXECUTION_OK.txt'),'utf8'),'LOCAL_PROJECT_EXECUTION_OK');
     assert.ok(requests.length>=2);assert.equal(observed,1);
     assert.equal(fs.existsSync(path.join(job.directory,'launch.json')),false);
     assert.ok(requests.every(r=>r.model==='fixture/claude-sonnet-5-5'));
-  }finally{next.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fs.rmSync(root,{recursive:true,force:true});}
+  }finally{
+    if(process.env.PROJECTS_TEST_EVIDENCE){
+      fs.mkdirSync(process.env.PROJECTS_TEST_EVIDENCE,{recursive:true});
+      for(const name of ['status.json','stdout.log','stderr.log'])if(fs.existsSync(path.join(job.directory,name)))
+        fs.copyFileSync(path.join(job.directory,name),path.join(process.env.PROJECTS_TEST_EVIDENCE,name));
+      fs.writeFileSync(path.join(process.env.PROJECTS_TEST_EVIDENCE,'request-shapes.json'),JSON.stringify(requests.map(r=>({model:r.model,stream:r.stream,toolNames:r.tools?.map(t=>t.name)}))));
+    }
+    next.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fs.rmSync(root,{recursive:true,force:true});
+  }
 });

@@ -59,6 +59,7 @@ jobs:
         run: |
           export PROJECTS_TEST_CLI="$PWD/$(find fixture/cli-cache -path '*/claude.app/Contents/MacOS/claude' -type f -print -quit)"
           test -x "$PROJECTS_TEST_CLI"
+          export PROJECTS_TEST_EVIDENCE="$PWD/projects-evidence/runner"
           node --test crates/claude-local/runtime/projects-runner.test.mjs
       - name: Native Projects UI and local API
         run: |

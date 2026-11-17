@@ -179,7 +179,7 @@ before(async () => {
     "audio/tone.mp3": Buffer.from([0x49, 0x44, 0x33]),
   });
   fs.mkdirSync(path.join(root, "runtime", "scripts"), { recursive: true });
-  for (const file of ["proxy.mjs", "projects-local.mjs", "hot-runtime.mjs", "local-policy.mjs", "runtime-bridge.js", "service.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "desktop-ui.mjs", "ui-resources.mjs", "site-policy.mjs", "browser-site-consent.js", "scripts/patch-dictation-start.mjs"]) {
+  for (const file of ["proxy.mjs", "projects-local.mjs", "projects-runner.mjs", "projects-job.mjs", "hot-runtime.mjs", "local-policy.mjs", "runtime-bridge.js", "service.mjs", "conversation-service.mjs", "rpc.mjs", "runtime.mjs", "official-assets.mjs", "desktop-ui.mjs", "ui-resources.mjs", "site-policy.mjs", "browser-site-consent.js", "scripts/patch-dictation-start.mjs"]) {
     fs.copyFileSync(path.join(here, file), path.join(root, "runtime", file));
   }
   fs.copyFileSync(
