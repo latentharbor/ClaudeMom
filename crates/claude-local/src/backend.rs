@@ -23,6 +23,40 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const START_TIMEOUT: Duration = Duration::from_secs(12);
 static OPERATION: Mutex<()> = Mutex::new(());
 
+// 录制版模板（每个前端版本一组，脱敏后的接口数据 + 同一次录制的页面外壳）：由 build.rs 从
+// runtime/mock-templates/<build>/ 生成 TEMPLATE_ASSETS，装到 mock/<build>/。
+include!(concat!(env!("OUT_DIR"), "/templates.rs"));
+
+fn all_assets() -> impl Iterator<Item = &'static (&'static str, &'static [u8])> {
+    ASSETS.iter().chain(TEMPLATE_ASSETS.iter())
+}
+
+/// 内嵌的录制版本：build id 与该版本前端的构建时间（秒，取自页面外壳的 data-build-timestamp），新的在前。
+pub fn template_versions() -> Vec<TemplateVersion> {
+    let mut versions: Vec<TemplateVersion> = TEMPLATE_ASSETS
+        .iter()
+        .filter_map(|(name, contents)| {
+            let build = name.strip_prefix("mock/")?.strip_suffix("/shell.html")?;
+            let head = String::from_utf8_lossy(&contents[..contents.len().min(4096)]);
+            let built_at = head
+                .split("data-build-timestamp=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|value| value.parse().ok());
+            Some(TemplateVersion { build: build.to_string(), built_at })
+        })
+        .collect();
+    versions.sort_by(|a, b| b.built_at.cmp(&a.built_at).then_with(|| a.build.cmp(&b.build)));
+    versions
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateVersion {
+    pub build: String,
+    pub built_at: Option<u64>,
+}
+
 const ASSETS: &[(&str, &[u8])] = &[
     (
         "proxy.mjs",
@@ -88,50 +122,6 @@ const ASSETS: &[(&str, &[u8])] = &[
         "catalogs/zh-Hans.overrides.json",
         include_bytes!("../assets/localization/catalogs/zh-Hans.overrides.json"),
     ),
-    // 由 tools/claude-local/sanitize-mock.mjs 从本机录制数据生成的脱敏模板，
-    // 不含任何个人字段，供完整功能模式作为 PoC bootstrap/api 数据。
-    (
-        "mock/bootstrap.json",
-        include_bytes!("../runtime/mock-template/bootstrap.json"),
-    ),
-    (
-        "mock/api/account_profile.json",
-        include_bytes!("../runtime/mock-template/api/account_profile.json"),
-    ),
-    (
-        "mock/api/claude_code_user_settings.json",
-        include_bytes!(
-            "../runtime/mock-template/api/claude_code_user_settings.json"
-        ),
-    ),
-    (
-        "mock/api/conversations.json",
-        include_bytes!("../runtime/mock-template/api/conversations.json"),
-    ),
-    (
-        "mock/api/experiences.json",
-        include_bytes!("../runtime/mock-template/api/experiences.json"),
-    ),
-    (
-        "mock/api/mcp_servers.json",
-        include_bytes!("../runtime/mock-template/api/mcp_servers.json"),
-    ),
-    (
-        "mock/api/memory_settings.json",
-        include_bytes!("../runtime/mock-template/api/memory_settings.json"),
-    ),
-    (
-        "mock/api/reflections_settings.json",
-        include_bytes!("../runtime/mock-template/api/reflections_settings.json"),
-    ),
-    (
-        "mock/api/skills.json",
-        include_bytes!("../runtime/mock-template/api/skills.json"),
-    ),
-    (
-        "mock/api/trial_status.json",
-        include_bytes!("../runtime/mock-template/api/trial_status.json"),
-    ),
 ];
 
 #[derive(Debug, Serialize)]
@@ -148,6 +138,8 @@ pub struct ClaudeLocalStatus {
     pub port: Option<u16>,
     pub ca_ready: bool,
     pub ca_trusted: bool,
+    /// 内嵌的录制版本，新的在前；设置里的 `template` 为空时用第一个。
+    pub templates: Vec<TemplateVersion>,
     pub node_available: bool,
     pub dictation_ready: bool,
     pub config: ClaudeLocalSettings,
@@ -423,6 +415,100 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 // 停止/切回 3p 时按记录恢复，保证幂等可回滚。
 const SWITCH_STATE_FILE: &str = "real-profile-switch.json";
 const CONFIG_LIBRARY_BACKUP: &str = "configLibrary.codex-plus-backup";
+/// 第三方模式下本程序写进 `Claude-3p/configLibrary` 的那份配置：固定 id，`_meta.json` 带标记，
+/// 还原时只删带标记的（用户自己的或别的工具写的 configLibrary 一律先挪开、事后放回）。
+const GATEWAY_CONFIG_ID: &str = "00000000-0000-4000-8000-636c6175646d";
+const GATEWAY_CONFIG_MARKER: &str = "claudeMomGateway";
+
+/// Claude 第三方模式的推理配置：推理走本地服务（它按上游 Key 校验，带上两种认证头、
+/// 换算模型名、去掉 diagnostics 再转给上游），模型列表照上游的来，带显示名。
+fn gateway_config_entry(port: u16, upstream: &Upstream) -> Value {
+    let mut names: Vec<&str> = Vec::new();
+    for model in std::iter::once(&upstream.default_model).chain(upstream.models.iter()) {
+        let model = model.trim();
+        if !model.is_empty() && !names.contains(&model) {
+            names.push(model);
+        }
+    }
+    let models: Vec<Value> = names
+        .into_iter()
+        .map(|model| {
+            match upstream
+                .model_names
+                .get(model)
+                .and_then(|value| value["name"].as_str())
+                .map(str::trim)
+                .filter(|label| !label.is_empty() && *label != model)
+            {
+                Some(label) => json!({ "name": model, "labelOverride": label }),
+                None => json!(model),
+            }
+        })
+        .collect();
+    json!({
+        "inferenceProvider": "gateway",
+        "inferenceGatewayBaseUrl": format!("http://127.0.0.1:{port}"),
+        "inferenceGatewayApiKey": upstream.token,
+        "inferenceGatewayAuthScheme": "bearer",
+        "inferenceModels": models,
+        "modelDiscoveryEnabled": false,
+        "disableDeploymentModeChooser": true,
+    })
+}
+
+fn is_managed_gateway_library(library: &Path) -> bool {
+    fs::read(library.join("_meta.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|meta| meta[GATEWAY_CONFIG_MARKER].as_bool() == Some(true))
+}
+
+/// 写本程序的第三方模式配置。调用前 `apply_real_profile(.., "3p")` 已把原有的 configLibrary 挪开。
+/// 先写配置、最后写带标记的 `_meta.json`：中途失败时目录里没有 meta，Claude 不会用它；
+/// 这次新建的目录失败时直接删掉，不留来历不明的空目录。
+fn write_gateway_library(sets: &[ProfileSet], entry: &Value) -> Result<()> {
+    let meta = serde_json::to_vec_pretty(&json!({
+        "appliedId": GATEWAY_CONFIG_ID,
+        "entries": [{ "id": GATEWAY_CONFIG_ID, "name": "ClaudeMom" }],
+        GATEWAY_CONFIG_MARKER: true,
+    }))?;
+    let entry = serde_json::to_vec_pretty(entry)?;
+    for (index, set) in sets.iter().enumerate() {
+        // 主集合必写；其余集合（Windows 的 MSIX 虚拟化目录）只在 Claude 已经建过时写。
+        if index > 0 && !set.three_p.is_dir() {
+            continue;
+        }
+        let library = set.three_p.join("configLibrary");
+        if library.exists() && !is_managed_gateway_library(&library) {
+            bail!("{} 里还有别的配置，没能挪开，请先退出 Claude 再试", library.display());
+        }
+        let created = !library.exists();
+        let write = || -> Result<()> {
+            private_dir(&library)?;
+            write_private(&library.join(format!("{GATEWAY_CONFIG_ID}.json")), &entry)?;
+            write_private(&library.join("_meta.json"), &meta)?;
+            Ok(())
+        };
+        if let Err(error) = write() {
+            if created {
+                let _ = fs::remove_dir_all(&library);
+            }
+            return Err(error.context(format!("无法写入 {}", library.display())));
+        }
+    }
+    Ok(())
+}
+
+fn remove_gateway_libraries(sets: &[ProfileSet]) -> Result<()> {
+    for set in sets {
+        let library = set.three_p.join("configLibrary");
+        if is_managed_gateway_library(&library) {
+            fs::remove_dir_all(&library)
+                .with_context(|| format!("无法清理 {}", library.display()))?;
+        }
+    }
+    Ok(())
+}
 
 /// Claude Desktop 的一组 profile 目录：data 放 1p 的 userData（claude_desktop_config.json、Cache、claude-code-sessions），
 /// mode 是写 deploymentMode 的 Claude 目录，three_p 是 3p 模式的 userData。macOS 上 data 与 mode 相同。
@@ -551,6 +637,10 @@ fn recover_orphan_config_library(sets: &[ProfileSet], root: &Path) -> Result<Opt
         if !backup.exists() || tracked(&backup) {
             continue;
         }
+        if is_managed_gateway_library(&target) {
+            fs::remove_dir_all(&target)
+                .with_context(|| format!("无法清理 {}", target.display()))?;
+        }
         if !target.exists() {
             fs::rename(&backup, &target)
                 .with_context(|| format!("无法恢复 {}", target.display()))?;
@@ -584,16 +674,26 @@ fn recover_orphan_config_library(sets: &[ProfileSet], root: &Path) -> Result<Opt
 }
 
 fn apply_real_profile_one_p(sets: &[ProfileSet], root: &Path) -> Result<()> {
+    apply_real_profile(sets, root, "1p")
+}
+
+/// 把真实 Claude profile 切到 `mode`（完整功能模式用 `1p`，第三方模式用 `3p`）：
+/// 改 deploymentMode、把原有的 configLibrary 挪开，原样记进状态文件，`restore_real_profile` 按它还原。
+/// 已经切到同一模式时什么都不做；切的是另一种模式就先还原再切。
+fn apply_real_profile(sets: &[ProfileSet], root: &Path, mode: &str) -> Result<()> {
     recover_orphan_config_library(sets, root)?;
     let state_path = switch_state_path(root);
     if state_path.exists() {
-        // 已按记录切换过：校验仍在 1p 状态即可（幂等）。
         let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
         ensure!(
             state["applied"].as_bool() == Some(true),
             "Claude 本地模式切换状态文件不一致，请检查 {SWITCH_STATE_FILE}"
         );
-        return Ok(());
+        // 旧版状态文件没有 mode 字段，都是完整功能模式（1p）。
+        if state["mode"].as_str().unwrap_or("1p") == mode {
+            return Ok(());
+        }
+        restore_real_profile(sets, root)?;
     }
     private_dir(root)?;
     let mut original = serde_json::Map::new();
@@ -613,8 +713,8 @@ fn apply_real_profile_one_p(sets: &[ProfileSet], root: &Path) -> Result<()> {
                     key,
                     obj.get("deploymentMode").cloned().unwrap_or(Value::Null),
                 );
-                if obj.get("deploymentMode").and_then(Value::as_str) != Some("1p") {
-                    obj.insert("deploymentMode".into(), json!("1p"));
+                if obj.get("deploymentMode").and_then(Value::as_str) != Some(mode) {
+                    obj.insert("deploymentMode".into(), json!(mode));
                     crate::fsutil::atomic_write(
                         &config_path,
                         &serde_json::to_vec_pretty(&config)?,
@@ -653,6 +753,7 @@ fn apply_real_profile_one_p(sets: &[ProfileSet], root: &Path) -> Result<()> {
     }
     let state = json!({
         "applied": true,
+        "mode": mode,
         "deploymentMode": Value::Object(original),
         "configLibraryBackups": Value::Array(moved),
     });
@@ -661,6 +762,8 @@ fn apply_real_profile_one_p(sets: &[ProfileSet], root: &Path) -> Result<()> {
 }
 
 fn restore_real_profile(sets: &[ProfileSet], root: &Path) -> Result<()> {
+    // 本程序写的第三方模式配置先删掉，原来的 configLibrary 才能放回原处。
+    remove_gateway_libraries(sets)?;
     // 状态文件丢了也得先把遗留备份收尾，否则切回 3p 之后它还会一直卡着下次启动。
     recover_orphan_config_library(sets, root)?;
     let state_path = switch_state_path(root);
@@ -729,7 +832,7 @@ fn recorded_data_dir() -> Option<PathBuf> {
 
 fn install_assets(root: &Path) -> Result<()> {
     private_dir(root)?;
-    for (name, contents) in ASSETS {
+    for (name, contents) in all_assets() {
         let path = root.join(name);
         if fs::read(&path).is_ok_and(|existing| existing == *contents) {
             continue;
@@ -740,11 +843,23 @@ fn install_assets(root: &Path) -> Result<()> {
         write_private(&path, contents)?;
     }
     // 信任标记：代理据此确认旁边的 mock/ 是我们安装的内嵌模板（而非来路不明的数据）。
-    if root.join("mock/bootstrap.json").is_file() {
+    if !TEMPLATE_ASSETS.is_empty() {
         write_private(
             &root.join("mock/.codex-plus-template"),
             b"codex-plus mock template\n",
         )?;
+    }
+    // 清掉不再内嵌的旧东西：旧版的平铺模板（mock/bootstrap.json 等）和已经下架的录制版本。
+    let embedded: std::collections::HashSet<String> = template_versions().into_iter().map(|v| v.build).collect();
+    if let Ok(entries) = fs::read_dir(root.join("mock")) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || embedded.contains(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let _ = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        }
     }
     Ok(())
 }
@@ -792,18 +907,19 @@ fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
+/// 第一个能跑本地服务的 Node（要有全局 `fetch` 和 `WebSocket`，即 Node 22+）。
+/// 逐个检查：系统里装的 Node 太旧时，退回下一个候选，而不是直接报「找不到 Node」。
 fn node_runtime() -> Option<PathBuf> {
-    let node = crate::node::locate_node()?;
-    probe(
-        hidden_command(&node).args([
-            "-e",
-            "process.exit(typeof fetch==='function'&&typeof WebSocket==='function'?0:1)",
-        ]),
-        PROBE_TIMEOUT,
-    )
-    .ok()
-    .filter(|(success, _)| *success)
-    .map(|_| node)
+    crate::node::node_candidates().into_iter().find(|node| {
+        probe(
+            hidden_command(node).args([
+                "-e",
+                "process.exit(typeof fetch==='function'&&typeof WebSocket==='function'?0:1)",
+            ]),
+            PROBE_TIMEOUT,
+        )
+        .is_ok_and(|(success, _)| success)
+    })
 }
 
 /// `--proxy-server` 完整标志：整词匹配，5351 不会误伤 53514。
@@ -811,23 +927,31 @@ fn proxy_flag(port: u16) -> String {
     format!("--proxy-server=http://127.0.0.1:{port}")
 }
 
-/// 进程列表里有没有进程把 `--proxy-server` 指到这个端口：
+/// 第三方模式启动 Claude 时带的标记：那时 Claude 不经代理，靠它认出是本程序启动的。
+/// Chromium 不认识的开关会忽略。
+fn gateway_flag(port: u16) -> String {
+    format!("--claude-mom-gateway=http://127.0.0.1:{port}")
+}
+
+fn launched_by_us(token: &str, port: u16) -> bool {
+    token == proxy_flag(port) || token == gateway_flag(port)
+}
+
+/// 进程列表里有没有本程序在这个端口上启动的 Claude（`--proxy-server` 或第三方模式的标记）：
 /// 逐行、按空白切分，整词等于完整标志才算。
 fn processes_use_proxy(processes: &str, port: u16) -> bool {
-    let flag = proxy_flag(port);
     processes
         .lines()
-        .any(|line| line.split_whitespace().any(|token| token == flag))
+        .any(|line| line.split_whitespace().any(|token| launched_by_us(token, port)))
 }
 
 /// 从 `pgrep -fl`（行首是 pid）里挑出挂在指定代理端口上的进程 pid。
 fn claude_pids_on_proxy(listing: &str, port: u16) -> Vec<u32> {
-    let flag = proxy_flag(port);
     listing
         .lines()
         .filter_map(|line| {
             let (pid, command) = line.trim().split_once(' ')?;
-            if command.split_whitespace().any(|token| token == flag) {
+            if command.split_whitespace().any(|token| launched_by_us(token, port)) {
                 pid.trim().parse().ok()
             } else {
                 None
@@ -917,6 +1041,17 @@ fn is_desktop_claude_image(exe_file: &str, path: Option<&Path>) -> bool {
         .is_some_and(|dir| dir.join("resources").join("app.asar").is_file())
 }
 
+/// 进程是不是当前用户自己的：同一台电脑上别的用户（Windows 的另一个会话、macOS 的快速切换用户）
+/// 开着的 Claude 不算，否则这边会一直显示「Claude 正在运行」、启动按钮变灰（issue #2）。
+/// 任一边查不到时按「是」：宁可多拦一次，也不在 Claude 其实开着时再启动一个。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn in_own_session(own: Option<u32>, process: Option<u32>) -> bool {
+    match (own, process) {
+        (Some(own), Some(process)) => own == process,
+        _ => true,
+    }
+}
+
 fn claude_processes() -> Result<String> {
     #[cfg(target_os = "macos")]
     {
@@ -934,8 +1069,11 @@ fn claude_processes() -> Result<String> {
                 command == binary.as_str() || command.strip_prefix(binary.as_str()).is_some_and(|tail| tail.starts_with(' '))
             }).collect::<Vec<_>>().join("\n"));
         }
+        // 只看当前用户的进程（pgrep 默认匹配所有用户）。
+        // SAFETY: getuid 无参数、不会失败。
+        let uid = unsafe { libc::getuid() }.to_string();
         let (success, bytes) = probe(
-            Command::new("/usr/bin/pgrep").args(["-fl", "/Contents/MacOS/Claude( |$)"]),
+            Command::new("/usr/bin/pgrep").args(["-U", &uid, "-fl", "/Contents/MacOS/Claude( |$)"]),
             PROBE_TIMEOUT,
         )?;
         return Ok(if success {
@@ -948,8 +1086,12 @@ fn claude_processes() -> Result<String> {
     {
         // 与 pgrep -fl 同一形状：`{pid} {command_line}`，pids_on_proxy/use_proxy 原样可用。
         let mut listing = String::new();
+        let own_session = crate::winproc::current_session_id();
         for info in crate::winproc::enumerate_processes() {
             if !is_desktop_claude_image(&info.exe_file, info.executable_path.as_deref()) {
+                continue;
+            }
+            if !in_own_session(own_session, info.session_id) {
                 continue;
             }
             let command_line = crate::winproc::process_command_line(info.process_id)
@@ -1190,7 +1332,7 @@ fn assets_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     DIGEST.get_or_init(|| {
         let mut hasher = Sha256::new();
-        for (name, contents) in ASSETS {
+        for (name, contents) in all_assets() {
             hasher.update(name.as_bytes());
             hasher.update((contents.len() as u64).to_le_bytes());
             hasher.update(contents);
@@ -1566,6 +1708,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         port: runtime.map(|(port, _, _, _)| port),
         ca_ready: ready,
         ca_trusted: trusted,
+        templates: template_versions(),
         node_available: node_runtime().is_some(),
         dictation_ready,
         config,
@@ -1745,6 +1888,8 @@ fn start_backend(
         .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode))
         .env("CLAUDE_LOCAL_FORCE_BACKGROUND_MODE", flag(config.force_background_mode))
         .env("CLAUDE_LOCAL_COWORK", flag(config.cowork))
+        .env("CLAUDE_LOCAL_HUB_HOME", flag(config.hub_home))
+        .env("CLAUDE_LOCAL_TEMPLATE", config.template.trim())
         .env("CLAUDE_LOCAL_HIDE_UNROUTED_MODELS", flag(config.hide_unrouted_models))
         .env("CLAUDE_LOCAL_DISPLAY_NAME", config.effective_display_name())
         .env("CLAUDE_LOCAL_EMAIL", config.effective_email())
@@ -2006,6 +2151,7 @@ fn launch_original(
     localization: bool,
     upstream: Option<&Upstream>,
     share_home: bool,
+    three_p: bool,
 ) -> Result<()> {
     let mut command = hidden_command(executable(source));
     if crate::host::isolated_desktop_app().is_some() {
@@ -2032,6 +2178,22 @@ fn launch_original(
         strip_inherited_proxy(&mut command);
         if let Some(window) = upstream.default_window {
             command.env("CLAUDE_CODE_MAX_CONTEXT_TOKENS", window.to_string());
+        }
+        if three_p {
+            // 第三方模式：Claude 用安装包自带的界面，对话 / Cowork / Code 都由它自己直接调推理网关
+            // （就是本地服务），不经代理、也不需要模拟账号。只换 deploymentMode 和 configLibrary。
+            let sets = profile_sets();
+            apply_real_profile(&sets, root, "3p")?;
+            write_gateway_library(&sets, &gateway_config_entry(port, upstream))?;
+            command.arg(gateway_flag(port));
+            if localization {
+                command.arg("--lang=zh-CN");
+            }
+            for (name, value) in &upstream.extra_env {
+                command.env(name, value);
+            }
+            spawn_detached(&mut command, source, "无法启动原版 Claude Desktop")?;
+            return Ok(());
         }
         // 完整功能模式直接用真实 Claude profile（无 --user-data-dir），启动前切到 1p 并记录回滚信息。
         apply_real_profile_one_p(&profile_sets(), root)?;
@@ -2362,8 +2524,9 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
             if config.enabled {
                 install_assets(&root)?;
                 prepare_ca(&root)?;
+                // 第三方模式下 Claude 不经代理、不解密 HTTPS，证书用不上。
                 ensure!(
-                    ca_trusted(&root),
+                    config.three_p_mode || ca_trusted(&root),
                     "请先点击“信任本地证书”，完成系统授权后再启动"
                 );
                 let node = node_runtime().context("未找到支持 fetch 和 WebSocket 的 Node.js")?;
@@ -2373,13 +2536,24 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                 let upstream = host().prepare_upstream(&config)?;
                 sync_model_compact_windows(&root, &config, &upstream);
                 let port = start_backend(&root, &node, &config, &upstream, None)?;
-                if let Err(error) =
-                    launch_original(&source, &root, Some(port), config.localization, Some(&upstream), code_share_home(&config))
-                {
+                if let Err(error) = launch_original(
+                    &source,
+                    &root,
+                    Some(port),
+                    config.localization,
+                    Some(&upstream),
+                    code_share_home(&config),
+                    config.three_p_mode,
+                ) {
                     stop_backend();
+                    let _ = restore_real_profile(&profile_sets(), &root);
                     return Err(error);
                 }
-                "已通过本地兼容服务启动原版 Claude Desktop。".to_string()
+                if config.three_p_mode {
+                    "已用第三方模式启动 Claude Desktop，推理走本地服务。".to_string()
+                } else {
+                    "已通过本地兼容服务启动原版 Claude Desktop。".to_string()
+                }
             } else {
                 stop_backend();
                 // 切回 3p 前先恢复真实 profile（宿主重写 configLibrary 前，顺序不能反）。
@@ -2805,6 +2979,98 @@ server.listen(0,'127.0.0.1',()=>{
         restore_real_profile(&sets, &state_root).unwrap();
     }
 
+    fn read_json(path: &Path) -> Value {
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn three_p_mode_writes_its_own_gateway_config_and_restores_the_users() {
+        let dir = tempfile::tempdir().unwrap();
+        let support = dir.path().join("support");
+        let state = dir.path().join("state");
+        fs::create_dir_all(support.join("Claude")).unwrap();
+        fs::create_dir_all(support.join("Claude-3p/configLibrary")).unwrap();
+        fs::write(support.join("Claude/claude_desktop_config.json"), r#"{"deploymentMode":"1p","preferences":{"theme":"dark"}}"#).unwrap();
+        // 用户原有的第三方模式配置（比如 Magpie 写的）。
+        fs::write(support.join("Claude-3p/configLibrary/_meta.json"), r#"{"appliedId":"user"}"#).unwrap();
+        let sets = mac_sets_at(&support);
+        let upstream = Upstream {
+            root: "https://relay.example".into(),
+            token: "sk-test".into(),
+            default_model: "relay/opus".into(),
+            models: vec!["relay/opus".into(), "relay/flash".into()],
+            model_names: [("relay/flash".to_string(), json!({ "name": "Flash" }))].into_iter().collect(),
+            ..Upstream::default()
+        };
+
+        apply_real_profile(&sets, &state, "3p").unwrap();
+        write_gateway_library(&sets, &gateway_config_entry(54321, &upstream)).unwrap();
+        // 同一模式再来一次（换了端口）：不报错，配置跟着更新。
+        apply_real_profile(&sets, &state, "3p").unwrap();
+        write_gateway_library(&sets, &gateway_config_entry(54322, &upstream)).unwrap();
+
+        assert_eq!(read_json(&support.join("Claude/claude_desktop_config.json"))["deploymentMode"], json!("3p"));
+        let library = support.join("Claude-3p/configLibrary");
+        assert!(is_managed_gateway_library(&library));
+        let meta = read_json(&library.join("_meta.json"));
+        assert_eq!(meta["appliedId"], json!(GATEWAY_CONFIG_ID));
+        let entry = read_json(&library.join(format!("{GATEWAY_CONFIG_ID}.json")));
+        assert_eq!(entry["inferenceProvider"], json!("gateway"));
+        assert_eq!(entry["inferenceGatewayBaseUrl"], json!("http://127.0.0.1:54322"));
+        assert_eq!(entry["inferenceGatewayApiKey"], json!("sk-test"));
+        assert_eq!(entry["inferenceModels"], json!(["relay/opus", { "name": "relay/flash", "labelOverride": "Flash" }]));
+        assert_eq!(read_json(&support.join("Claude-3p").join(CONFIG_LIBRARY_BACKUP).join("_meta.json"))["appliedId"], json!("user"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(library.join(format!("{GATEWAY_CONFIG_ID}.json"))).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "配置里有上游 Key，只给本人读");
+        }
+
+        restore_real_profile(&sets, &state).unwrap();
+        let restored = read_json(&support.join("Claude/claude_desktop_config.json"));
+        assert_eq!(restored["deploymentMode"], json!("1p"));
+        assert_eq!(restored["preferences"]["theme"], json!("dark"));
+        assert_eq!(read_json(&library.join("_meta.json"))["appliedId"], json!("user"), "放回用户原来的配置");
+        assert!(!support.join("Claude-3p").join(CONFIG_LIBRARY_BACKUP).exists());
+        assert!(!state.join(SWITCH_STATE_FILE).exists());
+    }
+
+    #[test]
+    fn switching_between_full_and_three_p_modes_restores_in_between() {
+        let dir = tempfile::tempdir().unwrap();
+        let support = dir.path().join("support");
+        let state = dir.path().join("state");
+        fs::create_dir_all(support.join("Claude")).unwrap();
+        fs::write(support.join("Claude/claude_desktop_config.json"), r#"{"deploymentMode":"3p"}"#).unwrap();
+        let sets = mac_sets_at(&support);
+        let upstream = Upstream { token: "k".into(), default_model: "m".into(), ..Upstream::default() };
+
+        apply_real_profile_one_p(&sets, &state).unwrap();
+        assert_eq!(read_json(&state.join(SWITCH_STATE_FILE))["mode"], json!("1p"));
+        apply_real_profile(&sets, &state, "3p").unwrap();
+        write_gateway_library(&sets, &gateway_config_entry(1, &upstream)).unwrap();
+        let switched = read_json(&state.join(SWITCH_STATE_FILE));
+        assert_eq!(switched["mode"], json!("3p"));
+        // 记下的是用户最初的值，不是中间那次 1p。
+        // 和产品代码一样逐段 join：Windows 上 "Claude/claude_desktop_config.json" 拼出来的分隔符对不上记录里的键。
+        let main_config = support.join("Claude").join("claude_desktop_config.json").to_string_lossy().into_owned();
+        assert_eq!(switched["deploymentMode"][main_config.as_str()], json!("3p"));
+        apply_real_profile_one_p(&sets, &state).unwrap();
+        assert!(!support.join("Claude-3p/configLibrary").exists(), "回到完整功能模式时删掉第三方模式的配置");
+        assert_eq!(read_json(&support.join("Claude/claude_desktop_config.json"))["deploymentMode"], json!("1p"));
+        restore_real_profile(&sets, &state).unwrap();
+        assert_eq!(read_json(&support.join("Claude/claude_desktop_config.json"))["deploymentMode"], json!("3p"));
+    }
+
+    #[test]
+    fn claude_launched_in_three_p_mode_is_recognized_by_its_marker() {
+        let listing = format!("4509 /Applications/Claude.app/Contents/MacOS/Claude {} --lang=zh-CN\n4600 /Applications/Claude.app/Contents/MacOS/Claude", gateway_flag(53514));
+        assert!(processes_use_proxy(&listing, 53514));
+        assert!(!processes_use_proxy(&listing, 5351));
+        assert_eq!(claude_pids_on_proxy(&listing, 53514), vec![4509]);
+    }
+
     #[test]
     fn real_profile_switch_preserves_missing_deployment_mode() {
         let dir = tempfile::tempdir().unwrap();
@@ -2841,13 +3107,16 @@ server.listen(0,'127.0.0.1',()=>{
         assert!(dir.path().join("page-shim.js").is_file());
         assert!(dir.path().join("official-assets.mjs").is_file());
         assert!(dir.path().join("catalogs/dynamic/zh-Hans.json").is_file());
-        assert!(dir.path().join("mock/bootstrap.json").is_file());
+        let versions = template_versions();
+        assert!(!versions.is_empty(), "至少内嵌一个录制版本");
+        for version in &versions {
+            assert!(dir.path().join(format!("mock/{}/bootstrap.json", version.build)).is_file());
+        }
+        assert!(dir.path().join("mock/.codex-plus-template").is_file());
         assert!(!dir.path().join("ca").exists());
         assert!(!dir.path().join("vendor").exists());
         assert!(
-            !ASSETS
-                .iter()
-                .any(|(name, _)| name.contains("ion-dist.asar"))
+            !all_assets().any(|(name, _)| name.contains("ion-dist.asar"))
         );
     }
 
@@ -2855,7 +3124,9 @@ server.listen(0,'127.0.0.1',()=>{
     fn embedded_mock_template_is_sanitized() {
         let dir = tempfile::tempdir().unwrap();
         install_assets(dir.path()).unwrap();
-        let text = fs::read_to_string(dir.path().join("mock/bootstrap.json")).unwrap();
+        for version in template_versions() {
+        let base = dir.path().join("mock").join(&version.build);
+        let text = fs::read_to_string(base.join("bootstrap.json")).unwrap();
         let bootstrap: Value = serde_json::from_str(&text).unwrap();
         // 保留 GrowthBook / 模型选择器 / 计划形状
         assert!(
@@ -2863,8 +3134,14 @@ server.listen(0,'127.0.0.1',()=>{
                 .as_object()
                 .is_some_and(|f| !f.is_empty())
         );
+        // 新版录制里没有顶层 activeOrganization，组织只在 account.memberships 里（本地服务运行时自己补上 activeOrganization）。
+        let org = if bootstrap["activeOrganization"].is_object() {
+            &bootstrap["activeOrganization"]
+        } else {
+            &bootstrap["account"]["memberships"][0]["organization"]
+        };
         assert!(
-            bootstrap["activeOrganization"]["claude_ai_bootstrap_models_config"]
+            org["claude_ai_bootstrap_models_config"]
                 .as_array()
                 .is_some_and(|m| !m.is_empty())
         );
@@ -2874,7 +3151,7 @@ server.listen(0,'127.0.0.1',()=>{
             json!("local@claude.local")
         );
         assert_eq!(bootstrap["account"]["full_name"], json!("Local User"));
-        assert_eq!(bootstrap["activeOrganization"]["name"], json!("Local"));
+        assert_eq!(org["name"], json!("Local"));
         // 允许公共支持邮箱（@anthropic.com 出现在 GrowthBook 文案里）与合成域；
         // 其它邮箱一律不得残留。
         for cap in text.split('"').filter(|s| s.contains('@')) {
@@ -2892,16 +3169,86 @@ server.listen(0,'127.0.0.1',()=>{
                     email.ends_with("@claude.local")
                         || email.ends_with("@anthropic.com")
                         || email.ends_with("@example.com")
+                        // Anthropic 连接器文案里的占位示例（「例如 you@company.com」）。
+                        || email == "you@company.com"
                         || email.ends_with(".iam.gserviceaccount.com"),
                     "unexpected personal email in template: {email}"
                 );
             }
         }
-        let convos = fs::read_to_string(dir.path().join("mock/api/conversations.json")).unwrap();
+        let convos = fs::read_to_string(base.join("api/conversations.json")).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&convos).unwrap()["data"],
             json!([])
         );
+        }
+    }
+
+    #[test]
+    fn embedded_template_shell_matches_bootstrap() {
+        // 模板外壳与模板数据必须是同一个前端版本：换了其中一个，界面会错乱、Code 页卡在加载。
+        let dir = tempfile::tempdir().unwrap();
+        install_assets(dir.path()).unwrap();
+        for version in template_versions() {
+        let base = dir.path().join("mock").join(&version.build);
+        let shell = fs::read_to_string(base.join("shell.html")).unwrap();
+        let bootstrap: Value = serde_json::from_str(
+            &fs::read_to_string(base.join("bootstrap.json")).unwrap(),
+        )
+        .unwrap();
+        let build_id = shell
+            .split("data-build-id=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("shell.html 没有 data-build-id");
+        assert_eq!(
+            bootstrap["gated_imports_build_id"].as_str(),
+            Some(build_id),
+            "mock-templates/{}/shell.html 与 bootstrap.json 不是同一次录制",
+            version.build
+        );
+        assert_eq!(build_id, version.build, "模板目录名要等于它的前端 build id");
+        assert!(version.built_at.is_some(), "外壳里要有 data-build-timestamp（设置里按它显示日期、选最新）");
+        // 公开页面：不得带账号 uuid、邮箱（公共支持邮箱除外）或 API key。
+        assert!(!shell.contains("sk-ant"));
+        let is_hex = |s: &str| s.chars().all(|c| c.is_ascii_hexdigit());
+        let uuid_like = shell.as_bytes().windows(36).any(|w| {
+            let s = std::str::from_utf8(w).unwrap_or("");
+            let parts: Vec<&str> = s.split('-').collect();
+            parts.len() == 5
+                && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(n, p)| p.len() == *n && is_hex(p))
+        });
+        assert!(!uuid_like, "shell.html 里不应有 uuid");
+        for word in shell.split(|c: char| c.is_whitespace() || "\"'<>(),;".contains(c)) {
+            if let Some((local, domain)) = word.split_once('@') {
+                if !local.is_empty() && domain.contains('.') && domain.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+                    assert!(domain.ends_with("anthropic.com"), "unexpected email in shell.html: {word}");
+                }
+            }
+        }
+        }
+    }
+
+    #[test]
+    fn install_assets_drops_the_flat_template_and_versions_no_longer_shipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mock = dir.path().join("mock");
+        fs::create_dir_all(mock.join("api")).unwrap();
+        fs::create_dir_all(mock.join("retired-build/api")).unwrap();
+        fs::write(mock.join("bootstrap.json"), "{}").unwrap();
+        fs::write(mock.join("shell.html"), "old").unwrap();
+        fs::write(mock.join("retired-build/bootstrap.json"), "{}").unwrap();
+        install_assets(dir.path()).unwrap();
+        assert!(!mock.join("bootstrap.json").exists());
+        assert!(!mock.join("shell.html").exists());
+        assert!(!mock.join("api").exists());
+        assert!(!mock.join("retired-build").exists());
+        assert!(mock.join(".codex-plus-template").is_file());
+        let versions = template_versions();
+        assert!(versions.windows(2).all(|pair| pair[0].built_at >= pair[1].built_at), "新的在前");
+        for version in versions {
+            assert!(mock.join(&version.build).join("shell.html").is_file());
+        }
     }
 
     #[test]
@@ -3312,6 +3659,17 @@ RGvMS5OzZFvnFlekIHE6c+6QK9QtWD7P+PkIpRa1D01cb9SwsRHqGfs7o2UbaZxs\n\
     }
 
     #[test]
+    fn claude_in_another_users_session_does_not_count() {
+        // issue #2：主账户里开着 Claude，另一个 Windows 账户里的 ClaudeMom 启动按钮一直灰。
+        assert!(in_own_session(Some(2), Some(2)));
+        assert!(!in_own_session(Some(2), Some(1)), "别的会话里的 Claude 不算");
+        // 查不到会话时照旧算作在运行，不冒险再启动一个。
+        assert!(in_own_session(Some(2), None));
+        assert!(in_own_session(None, Some(1)));
+        assert!(in_own_session(None, None));
+    }
+
+    #[test]
     fn claude_pids_on_proxy_reads_windows_listing() {
         let listing = format!(
             "1234 \"C:\\Program Files\\WindowsApps\\AnthropicPBC.Claude_1_x64__p\\app\\Claude.exe\" {} --lang=zh-CN",
@@ -3380,6 +3738,16 @@ RGvMS5OzZFvnFlekIHE6c+6QK9QtWD7P+PkIpRa1D01cb9SwsRHqGfs7o2UbaZxs\n\
             serde_json::from_value(json!({ "allowAllBrowserSites": true })).unwrap();
         assert!(opted_in.allow_all_browser_sites);
         assert_eq!(opted_in.computer_use, legacy.computer_use);
+        // 旧版设置里的 localShell 读到时忽略，也不再写出。
+        let old: ClaudeLocalSettings = serde_json::from_value(json!({ "enabled": true, "localShell": true })).unwrap();
+        assert!(!old.three_p_mode);
+        assert!(value.get("localShell").is_none());
+        // 合并式主页默认关（经典主页有「对话 | Cowork」切换）。
+        assert!(!legacy.hub_home);
+        assert_eq!(value["hubHome"], false);
+        // 第三方模式默认关。
+        assert!(!legacy.three_p_mode);
+        assert_eq!(value["threePMode"], false);
         // 强制后台模式会连带打开后台模式和电脑控制。
         let forced = validate_config(ClaudeLocalSettings {
             force_background_mode: true,

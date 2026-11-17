@@ -34,3 +34,16 @@ test("a broken web cache remains an offline fallback rather than a startup failu
   fs.writeFileSync(path.join(dir, key + ".json"), "{invalid}");
   assert.equal(selectUiResources(installed, dir, reference).kind, "installed");
 });
+
+test("upstream recordings are coherent fallbacks while the owner's UI remains the automatic choice", () => {
+  const template = { html: `<html data-build-id="recorded">${"r".repeat(5000)}</html>`,
+    bootstrap: { gated_imports_build_id: "recorded", gated_imports: { recorded: { hash: "recorded-module" } } } };
+  const dir = cache();
+  assert.equal(selectUiResources(installed, dir, reference, template).kind, "web-cache");
+  const explicit = selectUiResources(installed, dir, reference, { ...template, selected: true });
+  assert.equal(explicit.kind, "recorded-template");
+  assert.deepEqual(explicit.gatedImports, template.bootstrap.gated_imports);
+  assert.equal(selectUiResources(installed, dir, null, template).buildId, "recorded");
+  assert.equal(selectUiResources(installed, dir, null, { ...template,
+    bootstrap: { ...template.bootstrap, gated_imports_build_id: "different" } }).kind, "installed");
+});

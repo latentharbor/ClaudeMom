@@ -2,6 +2,7 @@
 //! 与 Codex++ 的 windows_integration 同一实现（只取本库用到的部分）。
 #![allow(clippy::all)]
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
@@ -10,6 +11,9 @@ use anyhow::Context;
 use windows::Win32::Foundation::{BOOL, CloseHandle, FILETIME, HANDLE, HWND, LPARAM, MAX_PATH, WPARAM};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::System::RemoteDesktop::{
+    WTS_CURRENT_SERVER_HANDLE, WTS_PROCESS_INFOW, WTSEnumerateProcessesW, WTSFreeMemory,
 };
 use windows::Win32::System::Threading::{
     GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -72,6 +76,37 @@ pub struct WindowsProcessInfo {
     pub parent_process_id: u32,
     pub exe_file: String,
     pub executable_path: Option<PathBuf>,
+    /// 进程所在的 Windows 会话（同一台电脑上每个登录的用户各一个）；查不到时为 `None`。
+    pub session_id: Option<u32>,
+}
+
+/// 本进程所在的 Windows 会话。
+#[cfg(windows)]
+pub fn current_session_id() -> Option<u32> {
+    let mut session = 0u32;
+    // SAFETY: 输出参数指向栈上的 u32；ProcessIdToSessionId 见文件下方的 kernel32 声明。
+    unsafe { ProcessIdToSessionId(std::process::id(), &mut session) }
+        .as_bool()
+        .then_some(session)
+}
+
+/// 全机进程 → 会话。`WTSEnumerateProcessesW` 不用打开进程，其它用户的进程（没有权限打开的）也查得到。
+#[cfg(windows)]
+fn process_sessions() -> HashMap<u32, u32> {
+    let mut sessions = HashMap::new();
+    let mut info: *mut WTS_PROCESS_INFOW = std::ptr::null_mut();
+    let mut count = 0u32;
+    // SAFETY: 成功时 info 指向 count 个 WTS_PROCESS_INFOW，用完由 WTSFreeMemory 释放。
+    let listed = unsafe { WTSEnumerateProcessesW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &mut info, &mut count) };
+    if listed.is_err() || info.is_null() {
+        return sessions;
+    }
+    let entries = unsafe { std::slice::from_raw_parts(info, count as usize) };
+    for entry in entries {
+        sessions.insert(entry.ProcessId, entry.SessionId);
+    }
+    unsafe { WTSFreeMemory(info.cast()) };
+    sessions
 }
 
 
@@ -92,6 +127,7 @@ pub fn enumerate_processes() -> Vec<WindowsProcessInfo> {
     if unsafe { Process32FirstW(snapshot, &mut entry) }.is_err() {
         return Vec::new();
     }
+    let sessions = process_sessions();
     loop {
         let process_id = entry.th32ProcessID;
         processes.push(WindowsProcessInfo {
@@ -99,6 +135,7 @@ pub fn enumerate_processes() -> Vec<WindowsProcessInfo> {
             parent_process_id: entry.th32ParentProcessID,
             exe_file: nul_terminated_wide_to_string(&entry.szExeFile),
             executable_path: query_process_image_path(process_id),
+            session_id: sessions.get(&process_id).copied(),
         });
         if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
             break;

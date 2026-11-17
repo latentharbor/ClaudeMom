@@ -80,6 +80,10 @@ export function desktopFeatures(reference, runtime) {
     on: runtime.computerUse, off: !runtime.computerUse, source: "force",
     experiment: null, experimentResult: null,
   };
+  features["40173473"] = {
+    value: runtime.computerUse, on: runtime.computerUse, off: !runtime.computerUse, source: "force",
+    experiment: null, experimentResult: null,
+  };
   if (runtime.forceBackgroundMode) {
     features["1346958739"] = {
       value: { major: 99, minor: 9999 }, on: true, off: false, source: "force",

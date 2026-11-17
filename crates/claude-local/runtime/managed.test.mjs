@@ -4,16 +4,18 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import tls from "node:tls";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { decode, get, asMsg, asStr, ld, vi } from "./rpc.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
-import { createStateStore, dropUnroutedModels, gatewayModel, gatewayTarget, modelLabel, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createGatewayStreamParser, createStateStore, dropUnroutedModels, gatewayHttpError, isPrivateFile, gatewayModel, gatewayTarget, modelLabel, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const modelIds = ["alpha/claude-opus-4-6", "beta/gpt-6", "gamma/grok-4", "alpha/shared", "beta/shared"];
@@ -200,6 +202,29 @@ before(async () => {
     for await (const chunk of req) chunks.push(chunk);
     const raw = Buffer.concat(chunks).toString("utf8");
     received.push({ path: req.url, headers: req.headers, body: raw ? JSON.parse(raw) : null });
+    // 用最后一条用户消息挑选上游的「坏」行为，模拟各家网关不规范的回法。
+    const last = raw ? JSON.parse(raw).messages?.at(-1)?.content : null;
+    if (last === "case:http-401") {
+      res.writeHead(401, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }));
+    }
+    if (last === "case:stream-error") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      return res.end('event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n');
+    }
+    if (last === "case:crlf") {
+      // CRLF 分隔、`\r` 和 `\n` 落在两个包里、中文字符被拆开、最后不发 message_stop。
+      const text = Buffer.from('event: content_block_delta\r\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"换行"}}\r\n\r\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":" ok"}}\r\n\r\n');
+      const split = text.indexOf("换") + 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(text.subarray(0, split));
+      res.write(text.subarray(split, text.indexOf("\r\n\r\n") + 1));
+      return res.end(text.subarray(text.indexOf("\r\n\r\n") + 1));
+    }
+    if (last === "case:json") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ type: "message", content: [{ type: "text", text: "whole json reply" }] }));
+    }
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"gateway reply"}}\n\ndata: {"type":"message_stop"}\n\n');
   });
@@ -243,7 +268,10 @@ test("fresh managed profile serves the installed official shell and bounded ASAR
   const shellHtml = shell.bytes.toString("utf8");
   assert.match(shellHtml, /data-build-id="fixture-build"/);
   assert.doesNotMatch(shellHtml, /stale private login shell/);
-  assert.match(shellHtml, /<meta name="i18n-catalogs" data-i18n-catalogs="en-US:1\.1\.1,zh-Hans:1\.1\.1">/);
+  assert.match(shellHtml, /<meta name="i18n-catalogs" data-i18n-catalogs="en-US:local\.local,zh-Hans:local\.local">/);
+  // 前端按 locale:基础.动态 两段解析版本号（三段会整张表解析失败，界面退回英文）。
+  const catalogs = shellHtml.match(/data-i18n-catalogs="([^"]+)"/)[1].split(",");
+  assert.ok(catalogs.every((entry) => /^([\w-]+):([\w-]+)\.([\w-]+)$/.test(entry)), catalogs.join(","));
   const shimIndex = shellHtml.indexOf('<script src="/__codex_plus/claude-localization.js"></script>');
   const firstAppScript = shellHtml.indexOf("<script>");
   assert.ok(shellHtml.indexOf('name="i18n-catalogs"') < firstAppScript);
@@ -391,6 +419,144 @@ test("installed template uses packaged resources even with a stale cached shell"
   }
 });
 
+test("installed templates come in recorded versions and the chosen one is used, newest by default", async () => {
+  const runtimeDir = path.join(root, "versioned-template-runtime");
+  fs.cpSync(path.join(root, "runtime"), runtimeDir, { recursive: true });
+  const mock = path.join(runtimeDir, "mock");
+  fs.rmSync(mock, { recursive: true, force: true });
+  fs.mkdirSync(mock, { recursive: true });
+  fs.writeFileSync(path.join(mock, ".codex-plus-template"), "");
+  for (const [build, time] of [["older-build", 1794046356], ["newer-build", 1794603257]]) {
+    fs.mkdirSync(path.join(mock, build, "api"), { recursive: true });
+    fs.writeFileSync(path.join(mock, build, "bootstrap.json"), JSON.stringify({ gated_imports_build_id: build, gated_imports: {} }));
+    fs.writeFileSync(path.join(mock, build, "shell.html"),
+      `<!doctype html><html data-build-id="${build}" data-build-timestamp="${time}"><head></head><body>${build} ${"s".repeat(5000)}</body></html>`);
+  }
+  const served = async (extra) => {
+    const instance = await start({ CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache"), ...extra }, runtimeDir);
+    try {
+      const bootstrap = (await request(instance, "/edge-api/bootstrap", { host: "claude.ai" })).json;
+      const shell = (await request(instance, "/new", { host: "claude.ai", extraHeaders: { accept: "text/html" } })).bytes.toString("utf8");
+      return { bootstrap: bootstrap.gated_imports_build_id, shell: shell.match(/data-build-id="([^"]+)"/)?.[1] };
+    } finally {
+      await stop(instance);
+    }
+  };
+  assert.deepEqual(await served({}), { bootstrap: "newer-build", shell: "newer-build" }, "没选时用最新的");
+  assert.deepEqual(await served({ CLAUDE_LOCAL_TEMPLATE: "older-build" }), { bootstrap: "older-build", shell: "older-build" });
+  assert.deepEqual(await served({ CLAUDE_LOCAL_TEMPLATE: "retired-build" }), { bootstrap: "newer-build", shell: "newer-build" }, "选的版本下架了就用最新的");
+  assert.deepEqual(await served({ CLAUDE_LOCAL_TEMPLATE: "../older-build" }), { bootstrap: "newer-build", shell: "newer-build" }, "只认版本目录名");
+});
+
+test("installed template with its own shell never serves an online or cached shell of another build", async () => {
+  // 新用户没有缓存时会从 claude.ai 拉到当前线上版本，与按旧版本录制的模板对不上（界面错乱、Code 页卡住）。
+  // 模板自带同一次录制的外壳时，主站页面导航一律用它；已经缓存了线上新版本的老用户也恢复。
+  const connects = [];
+  const upstreamProxy = http.createServer();
+  upstreamProxy.on("connect", (req, socket) => {
+    connects.push(req.url);
+    socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+  });
+  upstreamProxy.listen(0, "127.0.0.1");
+  await once(upstreamProxy, "listening");
+  const runtimeDir = path.join(root, "template-shell-runtime");
+  fs.cpSync(path.join(root, "runtime"), runtimeDir, { recursive: true });
+  fs.writeFileSync(path.join(runtimeDir, "mock", ".codex-plus-template"), "");
+  fs.writeFileSync(path.join(runtimeDir, "mock", "shell.html"), `<!doctype html><html data-build-id="template-build"><head></head><body>${"t".repeat(5000)}</body></html>`);
+  fs.writeFileSync(path.join(runtimeDir, "mock", "bootstrap.json"), JSON.stringify({
+    gated_imports_build_id: "template-build", gated_imports: {},
+  }));
+  // 缓存里已经有线上新版本的外壳（之前没有模板外壳时写穿的）。
+  const cacheDir = path.join(runtimeDir, ".cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  for (const key of ["claude.ai/epitaxy", "claude.ai/login"]) {
+    const file = path.join(cacheDir, crypto.createHash("sha1").update(key).digest("hex"));
+    fs.writeFileSync(file, `<html data-build-id="online-build">${"o".repeat(5000)}</html>`);
+    fs.writeFileSync(`${file}.json`, JSON.stringify({ status: 200, headers: { "content-type": "text/html" }, url: key }));
+  }
+  const instance = await start({
+    CLAUDE_LOCAL_CACHE_DIR: cacheDir,
+    CLAUDE_LOCAL_UPSTREAM_PROXY: `http://127.0.0.1:${upstreamProxy.address().port}`,
+  }, runtimeDir);
+  try {
+    for (const pathname of ["/new", "/epitaxy", "/settings/general", "/chat/abc"]) {
+      // Claude 加载主界面 /epitaxy 时 Accept 不带 text/html：两种都要用模板外壳。
+      for (const accept of ["text/html", "*/*"]) {
+        const shell = await request(instance, pathname, { host: "claude.ai", extraHeaders: { accept } });
+        assert.equal(shell.status, 200, `${pathname} (${accept})`);
+        assert.match(shell.bytes.toString("utf8"), /data-build-id="template-build"/, `${pathname} (${accept})`);
+      }
+    }
+    const root302 = await request(instance, "/", { host: "claude.ai", extraHeaders: { accept: "text/html" } });
+    assert.equal(root302.status, 302);
+    // 接口请求不受影响。
+    const bootstrap = await request(instance, "/edge-api/bootstrap", { host: "claude.ai" });
+    assert.equal(bootstrap.status, 200);
+    assert.ok(bootstrap.json);
+    assert.deepEqual(connects, [], "模板自带外壳时不去线上抓");
+  } finally {
+    await stop(instance);
+    upstreamProxy.close();
+  }
+});
+
+test("upstream fetches share a bounded, reused connection pool through the upstream proxy", async () => {
+  // 首次启动要补拉上千个资源：之前每个请求单独 CONNECT 一条隧道，代理软件里刷出上千条 node 连接。
+  const tlsServer = https.createServer({
+    key: fs.readFileSync(path.join(here, "ca/server.key")),
+    cert: fs.readFileSync(path.join(here, "ca/server.crt")),
+  }, async (req, res) => {
+    await delay(20);
+    res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+    res.end(`// ${req.url}`);
+  });
+  tlsServer.listen(0, "127.0.0.1");
+  await once(tlsServer, "listening");
+  const connects = [];
+  const upstreamProxy = http.createServer();
+  upstreamProxy.on("connect", (req, socket, head) => {
+    connects.push(req.url);
+    socket.on("error", () => {});
+    const target = net.connect(tlsServer.address().port, "127.0.0.1", () => {
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head?.length) target.write(head);
+      target.pipe(socket);
+      socket.pipe(target);
+    });
+    target.on("error", () => socket.destroy());
+    socket.once("close", () => target.destroy());
+  });
+  upstreamProxy.listen(0, "127.0.0.1");
+  await once(upstreamProxy, "listening");
+  const instance = await start({
+    CLAUDE_LOCAL_CACHE_DIR: path.join(root, "pool-cache"),
+    CLAUDE_LOCAL_UPSTREAM_PROXY: `http://127.0.0.1:${upstreamProxy.address().port}`,
+    NODE_EXTRA_CA_CERTS: path.join(here, "ca/ca.pem"),
+  });
+  try {
+    // 本机资源包里没有的 CDN 资源会转发上游。
+    const fetchAsset = (name) => request(instance, `/claude-ai/v2/assets/v1/${name}.js`, { host: "assets-proxy.anthropic.com" });
+    const burst = await Promise.all(Array.from({ length: 60 }, (_, i) => fetchAsset(`burst-${i}`)));
+    for (const [i, response] of burst.entries()) {
+      assert.equal(response.status, 200);
+      assert.equal(response.bytes.toString("utf8"), `// /claude-ai/v2/assets/v1/burst-${i}.js`);
+    }
+    assert.ok(connects.length <= 16, `60 个并发请求开了 ${connects.length} 条隧道，应不超过 16`);
+    assert.ok(connects.every((target) => target === "assets-proxy.anthropic.com:443"));
+    const opened = connects.length;
+    for (let i = 0; i < 40; i++) assert.equal((await fetchAsset(`later-${i}`)).status, 200);
+    assert.equal(connects.length, opened, "之后的请求复用已有连接，不再新开隧道");
+    // 同一条复用的连接上跑过几十个请求，不能每次都往 socket 上叠监听器（#16 看到过这个警告）。
+    assert.equal(instance.output().includes("MaxListenersExceededWarning"), false, instance.output());
+  } finally {
+    await stop(instance);
+    upstreamProxy.closeAllConnections();
+    upstreamProxy.close();
+    tlsServer.closeAllConnections();
+    tlsServer.close();
+  }
+});
+
 test("unpacked ion-dist directory is served when the Claude build ships no ASAR", async () => {
   // 部分 Claude 版本把前端解包成 resources/ion-dist/，没有 ion-dist.asar（issue #5）。
   const resourcesDir = path.join(root, "unpacked-resources");
@@ -456,7 +622,7 @@ test("unpacked ion-dist directory is served when the Claude build ships no ASAR"
   }
 });
 
-test("installed template turns on the Cowork GrowthBook gate unless disabled", async () => {
+test("installed template turns on Cowork and uses the classic home unless the new home is chosen", async () => {
   // 录制模板里 yukon_silver（574905726）是 false，新版 Claude 只显示 Chat / Code（issue #4）。
   const runtimeDir = path.join(root, "cowork-runtime");
   fs.cpSync(path.join(root, "runtime"), runtimeDir, { recursive: true });
@@ -464,24 +630,156 @@ test("installed template turns on the Cowork GrowthBook gate unless disabled", a
   fs.writeFileSync(path.join(runtimeDir, "mock", "bootstrap.json"), JSON.stringify({
     org_growthbook: {
       hashing_algorithm: "djb2",
-      features: { "574905726": { defaultValue: false }, "577907085": { defaultValue: true } },
+      features: {
+        "574905726": { defaultValue: false },
+        "577907085": { defaultValue: true },
+        // claude_ai_hub_web_delivery：录制账号在新主页实验组里，新主页藏掉了「Chat | Cowork」切换。
+        "2436273311": { defaultValue: true },
+      },
+    },
+    gated_imports_build_id: "fixture-build",
+    gated_imports: {
+      claude_ai_hub_web_delivery: { hash: "hub", css: [], preload: [] },
+      cardinal: { hash: "cardinal", css: [], preload: [] },
     },
   }));
   const env = { CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache") };
+  // Keep the template's shell and lazy module manifest together, as production
+  // versioned recordings do. An installed shell has a different manifest.
+  fs.writeFileSync(path.join(runtimeDir, "mock", "shell.html"),
+    `<!doctype html><html data-build-id="fixture-build"><head></head><body>${"c".repeat(5000)}</body></html>`);
   const features = async (extra) => {
     const instance = await start({ ...env, ...extra }, runtimeDir);
     try {
-      return (await request(instance, "/edge-api/bootstrap", { host: "claude.ai" })).json.org_growthbook;
+      return (await request(instance, "/edge-api/bootstrap", { host: "claude.ai" })).json;
     } finally {
       await stop(instance);
     }
   };
   const on = await features({});
-  assert.deepEqual(on.features["574905726"], { defaultValue: true });
-  assert.deepEqual(on.features["577907085"], { defaultValue: true }, "其它功能保持模板原值");
-  assert.equal(on.hashing_algorithm, "djb2");
+  assert.deepEqual(on.org_growthbook.features["574905726"], { defaultValue: true });
+  assert.deepEqual(on.org_growthbook.features["577907085"], { defaultValue: true }, "其它功能保持模板原值");
+  assert.equal(on.org_growthbook.hashing_algorithm, "djb2");
+  // 默认经典主页：合并式主页的开关和按 gated_imports 下发的代码都要去掉，「对话 | Cowork」切换才会出现。
+  assert.deepEqual(on.org_growthbook.features["2436273311"], { defaultValue: false });
+  assert.deepEqual(Object.keys(on.gated_imports), ["cardinal"]);
   const off = await features({ CLAUDE_LOCAL_COWORK: "0" });
-  assert.deepEqual(off.features["574905726"], { defaultValue: false });
+  assert.deepEqual(off.org_growthbook.features["574905726"], { defaultValue: false });
+  assert.deepEqual(off.org_growthbook.features["2436273311"], { defaultValue: false }, "主页样式和 Cowork 开关互不相干");
+  // 设置里选了合并式主页：两处都按模板原样。
+  const hub = await features({ CLAUDE_LOCAL_HUB_HOME: "1" });
+  assert.deepEqual(hub.org_growthbook.features["574905726"], { defaultValue: true });
+  assert.deepEqual(hub.org_growthbook.features["2436273311"], { defaultValue: true });
+  assert.deepEqual(Object.keys(hub.gated_imports).sort(), ["cardinal", "claude_ai_hub_web_delivery"]);
+});
+
+// 经本地代理 CONNECT 一条隧道，返回已收到 200 的 socket。
+async function tunnel(instance, target) {
+  const socket = net.connect(instance.port, "127.0.0.1");
+  socket.on("error", () => {});
+  await once(socket, "connect");
+  socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+  const [first] = await once(socket, "data");
+  assert.match(first.toString("latin1"), /^HTTP\/1\.1 200 /);
+  return socket;
+}
+
+function readAll(socket) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    socket.on("data", (chunk) => chunks.push(chunk));
+    socket.once("close", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+async function waitFor(check, message) {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await delay(10);
+  }
+  assert.fail(message);
+}
+
+test("pass-through tunnels close both sides and never leave upstream sockets behind", async () => {
+  // Claude 的非 claude 域名都经这里直通；之前 Claude 一侧 RST 断开时上游连接一直留着，越积越多。
+  const open = new Set();
+  const upstream = net.createServer((socket) => {
+    open.add(socket);
+    socket.on("error", () => {});
+    socket.once("close", () => open.delete(socket));
+    socket.on("data", (chunk) => {
+      // 收到 "bye" 时先发一大段再正常关闭：Claude 一侧必须完整收到，不能被截断。
+      if (chunk.toString().includes("bye")) socket.end(Buffer.alloc(4 * 1024 * 1024, 0x61));
+      else socket.write(chunk);
+    });
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  const target = `127.0.0.1:${upstream.address().port}`;
+  try {
+    for (let i = 0; i < 20; i++) (await tunnel(service, target)).resetAndDestroy();
+    await waitFor(() => open.size === 0, `Claude 一侧 RST 后上游仍开着 ${open.size} 条`);
+
+    for (let i = 0; i < 20; i++) (await tunnel(service, target)).end();
+    await waitFor(() => open.size === 0, `Claude 一侧正常关闭后上游仍开着 ${open.size} 条`);
+
+    const echo = await tunnel(service, target);
+    echo.write("ping");
+    assert.equal((await once(echo, "data"))[0].toString(), "ping");
+    const rest = readAll(echo);
+    echo.write("bye");
+    assert.equal((await rest).length, 4 * 1024 * 1024);
+    await waitFor(() => open.size === 0, "上游正常关闭后连接没有回收");
+  } finally {
+    for (const socket of open) socket.destroy();
+    upstream.close();
+  }
+});
+
+test("pass-through tunnels use the configured upstream proxy and abort when Claude gives up", async () => {
+  // Claude 被 --proxy-server 指到本代理后系统代理对它失效；直通也要经后端传入的出站代理。
+  const connects = [];
+  const held = new Set();
+  const upstreamProxy = http.createServer();
+  upstreamProxy.on("connect", (req, socket) => {
+    connects.push(req.url);
+    socket.on("error", () => {});
+    if (req.url.startsWith("slow.test")) {
+      // 模拟连不上的目标：一直不回 CONNECT。
+      // connect 事件交出的 socket 默认没人读，要 resume 才收得到对端关闭；
+      // HTTP server 的 socket 允许半关，对端关闭只触发 end。
+      held.add(socket);
+      socket.once("end", () => held.delete(socket));
+      socket.once("close", () => held.delete(socket));
+      socket.resume();
+      return;
+    }
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    socket.on("data", (chunk) => socket.write(chunk));
+  });
+  upstreamProxy.listen(0, "127.0.0.1");
+  await once(upstreamProxy, "listening");
+  const instance = await start({ CLAUDE_LOCAL_UPSTREAM_PROXY: `http://127.0.0.1:${upstreamProxy.address().port}` });
+  try {
+    const socket = await tunnel(instance, "example.test:443");
+    socket.write("hello");
+    assert.equal((await once(socket, "data"))[0].toString(), "hello");
+    socket.destroy();
+    assert.deepEqual(connects, ["example.test:443"]);
+
+    // Claude 等不及先关掉：本代理要同时取消发往出站代理的那条，不在后台继续等。
+    const pending = net.connect(instance.port, "127.0.0.1");
+    pending.on("error", () => {});
+    await once(pending, "connect");
+    pending.write("CONNECT slow.test:443 HTTP/1.1\r\nHost: slow.test:443\r\n\r\n");
+    await waitFor(() => held.size === 1, "没有发出 CONNECT");
+    pending.destroy();
+    await waitFor(() => held.size === 0, "Claude 放弃后发往出站代理的连接没有取消");
+  } finally {
+    await stop(instance);
+    upstreamProxy.closeAllConnections();
+    upstreamProxy.close();
+  }
 });
 
 test("clean managed runtime uses synthetic bootstrap and configured catalogs without private recordings", async () => {
@@ -695,6 +993,151 @@ test("RPC sends preserve model choice, switching, complete history and restart s
   assert.equal(prefs.json.preferences.feature_preference.complete.enable_email, false);
   assert.equal(service.output().includes("first test"), false);
   assert.equal(service.output().includes("test-local-gateway-token"), false);
+});
+
+function parseGateway(chunks) {
+  const result = { text: "", stop: 0, error: null };
+  const parser = createGatewayStreamParser({
+    text: (text) => { result.text += text; },
+    stop: () => { result.stop++; },
+    error: (message) => { result.error = message; },
+  });
+  for (const chunk of chunks) parser.write(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  parser.end();
+  return result;
+}
+
+test("gateway stream parser tolerates CRLF, split characters, [DONE] and missing message_stop", () => {
+  const body = Buffer.from('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"你好"}}\r\n\r\ndata: [DONE]\r\n\r\n');
+  const cut = body.indexOf("你") + 1;
+  const crlf = body.indexOf("\r\n\r\n") + 1;
+  assert.deepEqual(parseGateway([body.subarray(0, cut), body.subarray(cut, crlf), body.subarray(crlf)]), { text: "你好", stop: 1, error: null });
+  assert.deepEqual(parseGateway(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}\n\n', 'data: {"type":"message_stop"}\n\n']), { text: "a", stop: 1, error: null });
+  // 一个事件多行 data
+  assert.deepEqual(parseGateway(['data: {"type":"content_block_delta",\ndata: "delta":{"type":"text_delta","text":"b"}}\n\n']), { text: "b", stop: 1, error: null });
+});
+
+test("gateway stream parser reports upstream errors instead of ending silently", () => {
+  assert.deepEqual(parseGateway(['event: error\ndata: {"type":"error","error":{"message":"Overloaded"}}\n\n']), { text: "", stop: 0, error: "上游返回错误：Overloaded" });
+  assert.deepEqual(parseGateway([]), { text: "", stop: 0, error: "上游没有返回任何内容" });
+  assert.deepEqual(parseGateway(['event: ping\ndata: {"type":"ping"}\n\n']), { text: "", stop: 0, error: "上游没有返回任何内容" });
+  // 无视 stream:true、直接回整段 JSON 的网关
+  assert.deepEqual(parseGateway(['{"type":"message","content":[{"type":"text","text":"whole"}]}']), { text: "whole", stop: 1, error: null });
+  assert.deepEqual(parseGateway(['{"error":{"message":"model not found"}}']), { text: "", stop: 0, error: "上游返回错误：model not found" });
+  assert.equal(parseGateway(["<html>bad gateway</html>"]).error, "上游返回的不是流式回复：<html>bad gateway</html>");
+  assert.equal(gatewayHttpError(401, Buffer.from('{"type":"error","error":{"message":"invalid x-api-key"}}')), "上游返回 HTTP 401：invalid x-api-key");
+  assert.equal(gatewayHttpError(502, Buffer.from("  <h1>Bad\n Gateway</h1> ")), "上游返回 HTTP 502：<h1>Bad Gateway</h1>");
+  assert.equal(gatewayHttpError(500, Buffer.alloc(0)), "上游返回 HTTP 500");
+});
+
+function sseEvents(bytes) {
+  return bytes.toString("utf8").split("\n\n").filter(Boolean).map((block) => {
+    const event = block.match(/^event: (.+)$/m)?.[1];
+    const data = block.match(/^data: (.+)$/m)?.[1];
+    return { event, data: data ? JSON.parse(data) : null };
+  });
+}
+
+test("credential files are private by POSIX mode and owner, and by file type alone on Windows", () => {
+  const file = (mode, uid = 501, { link = false, regular = true } = {}) => ({
+    mode, uid, isFile: () => regular, isSymbolicLink: () => link,
+  });
+  assert.equal(isPrivateFile(file(0o100600), { platform: "darwin", uid: 501 }), true);
+  assert.equal(isPrivateFile(file(0o100644), { platform: "darwin", uid: 501 }), false);
+  assert.equal(isPrivateFile(file(0o100600, 0), { platform: "darwin", uid: 501 }), false);
+  // Windows：lstat 的 mode 恒为 0o666、uid 为 0，以前按 POSIX 校验必然失败，听写 503。
+  assert.equal(isPrivateFile(file(0o100666, 0), { platform: "win32", uid: undefined }), true);
+  assert.equal(isPrivateFile(file(0o100666, 0, { link: true }), { platform: "win32", uid: undefined }), false);
+  assert.equal(isPrivateFile(file(0o40666, 0, { regular: false }), { platform: "win32", uid: undefined }), false);
+});
+
+test("Cowork BFF lists keep the shapes Claude validates", async () => {
+  const servers = await request(service, "/api/directory/servers?limit=5000&visibility=public", { host: "claude.ai" });
+  assert.deepEqual(servers.json, { servers: [], next_cursor: null });
+  const tasks = await request(service, "/api/organizations/local/activation/cowork/tasks", { host: "claude.ai" });
+  assert.deepEqual(tasks.json, { tasks: [] });
+});
+
+test("REST completions show the upstream's error in the reply and end the stream properly", async () => {
+  const completion = async (conv, prompt) => {
+    const result = await request(service, `/api/organizations/local/chat_conversations/${conv}/completion`, {
+      host: "claude.ai",
+      body: { prompt, turn_message_uuids: { human_message_uuid: crypto.randomUUID(), assistant_message_uuid: crypto.randomUUID() } },
+    });
+    assert.equal(result.status, 200);
+    const events = sseEvents(result.bytes);
+    assert.equal(events.at(-1).event, "message_stop", "流必须正常收尾，否则 Claude 显示「连接已中断」");
+    return events.filter((e) => e.event === "content_block_delta").map((e) => e.data.delta.text).join("");
+  };
+  assert.equal(await completion(crypto.randomUUID(), "case:http-401"), "[网关错误：上游返回 HTTP 401：invalid x-api-key]");
+  assert.equal(await completion(crypto.randomUUID(), "case:stream-error"), "[网关错误：上游返回错误：Overloaded]");
+  assert.equal(await completion(crypto.randomUUID(), "case:json"), "whole json reply");
+  const conv = crypto.randomUUID();
+  assert.equal(await completion(conv, "case:crlf"), "换行 ok");
+  assert.equal(received.at(-1).body.max_tokens, 4096);
+  // 会话详情带上消息和叶子节点（#16）
+  const detail = await request(service, `/api/organizations/local/chat_conversations/${conv}`, { host: "claude.ai" });
+  assert.deepEqual(detail.json.chat_messages.map((m) => [m.sender, m.text]), [["human", "case:crlf"], ["assistant", "换行 ok"]]);
+  assert.equal(detail.json.current_leaf_message_uuid, detail.json.chat_messages[1].uuid);
+  assert.equal(service.output().includes("invalid x-api-key"), false, "受管模式不把上游错误细节写进日志");
+});
+
+test("REST completions accept compressed request bodies and conversations can be renamed and deleted", async () => {
+  const conv = crypto.randomUUID();
+  const base = `/api/organizations/local/chat_conversations/${conv}`;
+  for (const [encoding, encode] of [["gzip", zlib.gzipSync], ["br", zlib.brotliCompressSync], ["deflate", zlib.deflateSync]]) {
+    const body = Buffer.from(JSON.stringify({
+      prompt: "压缩过的提问",
+      turn_message_uuids: { human_message_uuid: crypto.randomUUID(), assistant_message_uuid: crypto.randomUUID() },
+    }));
+    await request(service, `${base}/completion`, { host: "claude.ai", body: encode(body), extraHeaders: { "content-encoding": encoding } });
+    assert.equal(received.at(-1).body.messages.at(-1).content, "压缩过的提问", `${encoding} 请求体要先解压`);
+  }
+  // 首条用户消息兜底命名
+  assert.equal((await request(service, base, { host: "claude.ai" })).json.name, "压缩过的提问");
+  const renamed = await request(service, base, { host: "claude.ai", method: "PATCH", body: { name: "  新名字  " } });
+  assert.equal(renamed.json.name, "新名字");
+  const deleted = await request(service, base, { host: "claude.ai", method: "DELETE" });
+  assert.equal(deleted.status, 204);
+  const list = await request(service, "/api/organizations/local/chat_conversations", { host: "claude.ai" });
+  assert.equal(list.json.some((c) => c.uuid === conv), false);
+});
+
+test("RPC replies carry the upstream's HTTP error and RPC conversations open with their messages", async () => {
+  const conv = "c0c0c0c0-d1d1-42e2-83f3-a4a4a4a4a4a4";
+  const rpc = (name, body) => request(service, `/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/${name}`, {
+    host: "claude.ai", body, type: "application/proto",
+  });
+  await rpc("SendAndSettle", send(conv, "case:http-401"));
+  const detail = await request(service, `/api/organizations/local/chat_conversations/${conv}`, { host: "claude.ai" });
+  const messages = detail.json.chat_messages;
+  assert.deepEqual(messages.map((m) => m.sender), ["human", "assistant"]);
+  assert.equal(messages[0].text, "case:http-401");
+  assert.match(messages[1].text, /\[网关错误：上游返回 HTTP 401：invalid x-api-key\]$/);
+  assert.equal(messages[1].parent_message_uuid, messages[0].uuid);
+  assert.equal(detail.json.current_leaf_message_uuid, messages[1].uuid);
+  const list = await request(service, "/api/organizations/local/chat_conversations", { host: "claude.ai" });
+  assert.equal(list.json.find((c) => c.uuid === conv).chat_messages, undefined, "会话列表不带消息");
+});
+
+test("installed template lists its example skills as disabled so Claude does not download them", async () => {
+  // 技能内容只在 Anthropic 服务器上，本地装不上；标成已启用会让每次同步都失败（#16）。
+  const runtimeDir = path.join(root, "skills-runtime");
+  fs.cpSync(path.join(root, "runtime"), runtimeDir, { recursive: true });
+  fs.writeFileSync(path.join(runtimeDir, "mock", ".codex-plus-template"), "");
+  fs.writeFileSync(path.join(runtimeDir, "mock", "api", "skills.json"), JSON.stringify({
+    skills: [{ id: "morning", name: "morning", enabled: true }, { id: "learn", name: "learn", enabled: false }],
+  }));
+  const instance = await start({ CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache") }, runtimeDir);
+  try {
+    const list = await request(instance, "/api/organizations/local/skills/list-skills", { host: "claude.ai" });
+    assert.deepEqual(list.json.skills, [{ id: "morning", name: "morning", enabled: false }, { id: "learn", name: "learn", enabled: false }]);
+    const download = await request(instance, "/api/organizations/local/skills/download-dot-skill-file?skill_id=morning&entrypoint=local-agent", { host: "claude.ai" });
+    assert.equal(download.status, 404);
+    assert.equal(download.json.error.type, "not_found_error");
+  } finally {
+    await stop(instance);
+  }
 });
 
 test("managed SIGTERM and stdin closure flush state and release the listener", async () => {

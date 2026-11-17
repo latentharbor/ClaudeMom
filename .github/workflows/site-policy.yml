@@ -1,14 +1,14 @@
 name: Site policy compatibility
 on:
   push:
-    branches: [fix-site-policy]
+    branches: [fix-site-policy, merge-upstream-20261117]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   policy:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,8 +21,7 @@ jobs:
         working-directory: crates/claude-local/runtime
         run: |
           bash scripts/gen-ca.sh
-          node --test --test-timeout=30000 --test-name-pattern='site policy' proxy.test.mjs
-          node --test --test-timeout=30000 --test-name-pattern='managed readiness|browser site consent|fresh managed profile' managed.test.mjs
+          node --test --test-timeout=120000 managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs scripts/*.test.mjs
       - name: Frontend settings contract
         working-directory: apps/claude-mom
         run: |
@@ -33,4 +32,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Settings persistence and runtime packaging
-        run: cargo test -p claude-local local_settings_serialize_independently_from_enhanced_copy
+        run: cargo test -p claude-local

@@ -483,13 +483,14 @@ dependencies = [
 
 [[package]]
 name = "claude-local"
-version = "0.1.6"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "directories",
  "futures-util",
  "http",
+ "libc",
  "rcgen",
  "reqwest 0.12.28",
  "serde",
@@ -508,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "claude-mom"
-version = "0.1.6"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "claude-local",

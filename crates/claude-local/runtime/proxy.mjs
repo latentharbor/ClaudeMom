@@ -22,10 +22,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { Duplex } from "node:stream";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
-import { createStateStore, dropUnroutedModels, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, nativeModelId, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createGatewayStreamParser, createStateStore, dropUnroutedModels, gatewayBody, gatewayHttpError, gatewayModel, gatewayTarget, isPrivateFile, modelLabel, modelList, modelSelectors, modelWindow, nativeModelId, planProfile, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
 import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
 import { selectUiResources } from "./ui-resources.mjs";
@@ -48,6 +50,8 @@ const localizationShim = runtime.managed && !runtime.recordedDir && runtime.loca
   ? fs.readFileSync(path.join(here, "page-shim.js"))
   : null;
 
+const LOCAL_CATALOG_VERSION = "local.local";
+
 function addLocalizationShim(html, officialLocales) {
   if (!localizationShim) return html;
   const head = /<head\b[^>]*>/i.exec(html);
@@ -64,10 +68,12 @@ function addLocalizationShim(html, officialLocales) {
     const match = entry.trim().match(/^([\w-]+):([\w-]+)\.([\w-]+)$/);
     if (match) catalogs.set(match[1], `${match[2]}.${match[3]}`);
   }
+  // 版本号必须是「基础词表.动态词表」两段：前端按 /^([\w-]+):([\w-]+)\.([\w-]+)$/ 解析，
+  // 以前写的 1.1.1 是三段，整张表都解析失败、语言列表变空，界面就退回英文。
   for (const locale of officialLocales) {
-    if (!catalogs.has(locale)) catalogs.set(locale, "1.1.1");
+    if (!catalogs.has(locale)) catalogs.set(locale, LOCAL_CATALOG_VERSION);
   }
-  catalogs.set("zh-Hans", catalogs.get("zh-Hans") ?? "1.1.1");
+  catalogs.set("zh-Hans", catalogs.get("zh-Hans") ?? LOCAL_CATALOG_VERSION);
   const catalogValue = [...catalogs]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([locale, versions]) => `${locale}:${versions}`)
@@ -118,13 +124,66 @@ const CACHE_DIR = process.env.CLAUDE_LOCAL_CACHE_DIR || path.join(here, ".cache"
 // 代理目录里来历不明的 mock 一律忽略（托管测试用 privateFixture 守住这条）。
 const TRUSTED_TEMPLATE = fs.existsSync(path.join(here, "mock", ".codex-plus-template"));
 const POC_DIR = runtime.recordedDir || (TRUSTED_TEMPLATE ? here : null);
-const POC_MOCK = path.join(POC_DIR ?? here, "mock");
+// 模板按录制版本放在 mock/<build>/（每个前端版本一组接口数据 + 页面外壳）。设置里选了哪个用哪个，
+// 没选或选的已经下架就用最新的（按外壳里的 data-build-timestamp）。没有版本目录时是旧的平铺布局
+// （开发用的录制目录 CLAUDE_LOCAL_RECORDED_DIR 也是这样），直接用 mock/。
+const TEMPLATE_ROOT = path.join(POC_DIR ?? here, "mock");
+function templateBuildTime(dir) {
+  try {
+    const head = fs.readFileSync(path.join(dir, "shell.html")).subarray(0, 4096).toString("utf8");
+    return Number(head.match(/\bdata-build-timestamp="(\d+)"/)?.[1]) || 0;
+  } catch {
+    return -1;
+  }
+}
+function pickTemplate() {
+  if (!POC_DIR) return TEMPLATE_ROOT;
+  let versions = [];
+  try {
+    versions = fs.readdirSync(TEMPLATE_ROOT, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^[\w-]+$/.test(entry.name) &&
+        fs.existsSync(path.join(TEMPLATE_ROOT, entry.name, "bootstrap.json")))
+      .map((entry) => entry.name);
+  } catch {}
+  if (!versions.length) return TEMPLATE_ROOT;
+  if (runtime.template && versions.includes(runtime.template)) return path.join(TEMPLATE_ROOT, runtime.template);
+  const newest = versions
+    .map((name) => ({ name, time: templateBuildTime(path.join(TEMPLATE_ROOT, name)) }))
+    .sort((a, b) => b.time - a.time || a.name.localeCompare(b.name))[0].name;
+  return path.join(TEMPLATE_ROOT, newest);
+}
+const POC_MOCK = pickTemplate();
 const POC_I18N = path.join(POC_DIR ?? here, "i18n");
 // 托管模式在存在 PoC 数据（dev 录制目录或安装的内嵌 mock 模板）时走 PoC 数据路径；
 // 完全没有模板数据时保持合成兜底（officialShell/localBootstrap + 状态告警）。
 const dataManaged = runtime.managed && !POC_DIR;
+// 页面外壳用本机 Claude 自带的版本（ion-dist）：资源都在本地，不用每逢线上换版本就补拉上千个文件，
+// 首次启动也不依赖能连上 claude.ai。只在没有模板数据时这样用：本机这份是 Claude 第三方模式的界面，
+// 配上按 claude.ai 录制的模板数据对不上；要用它请选「本机版」界面（第三方模式启动）。
+// 模板自带的页面外壳（mock/shell.html）：与模板数据同一次录制、同一个前端版本。
+// 有它时主站的页面导航一律用它，不看缓存、不去线上抓：线上页面会换版本，
+// 配上按旧版本录制的模板就会界面错乱、Code 页卡在加载（新用户没有缓存时必然拿到线上版本）。
+const TEMPLATE_SHELL = (() => {
+  if (!POC_DIR) return null;
+  try {
+    const body = fs.readFileSync(path.join(POC_MOCK, "shell.html"));
+    return body.length >= 4096 && /<html\b[^>]*\bdata-build-id="[^"]+"/i.test(body.subarray(0, 4096).toString("utf8"))
+      ? body
+      : null;
+  } catch {
+    return null;
+  }
+})();
 const READ_CACHE = POC_DIR ? path.join(POC_DIR, ".cache") : CACHE_DIR;
-const uiResources = managedResources ? selectUiResources(officialAssets, READ_CACHE, desktopUi.web) : null;
+const templateBootstrap = (() => {
+  if (!POC_DIR) return null;
+  try { return JSON.parse(fs.readFileSync(path.join(POC_MOCK, "bootstrap.json"), "utf8")); }
+  catch { return null; }
+})();
+const uiResources = managedResources ? selectUiResources(officialAssets, READ_CACHE, desktopUi.web, {
+  html: TEMPLATE_SHELL?.toString("utf8"), bootstrap: templateBootstrap,
+  selected: Boolean(runtime.template && runtime.template === path.basename(POC_MOCK)),
+}) : null;
 const installedResources = managedResources && uiResources.kind === "installed";
 const LOG = arg("log", "1") !== "0";
 const READY_FILE = process.env.CLAUDE_LOCAL_READY_FILE;
@@ -136,6 +195,9 @@ const MAX_DICTATION_WS_CONNECTIONS = 4;
 const MAX_DICTATION_WS_BYTES = 26 * 1024 * 1024;
 const MAX_DICTATION_WS_IDLE_MS = 130_000;
 const MAX_DICTATION_WS_DURATION_MS = 16 * 60_000;
+// Desktop 的 policy-limits 校验器要求 restrictions 是非 null 对象（不能是数组）；
+// compliance_taints 可选数组，defaults 可选对象。
+const POLICY_LIMITS = { restrictions: {}, compliance_taints: [], defaults: {}, artifact_create_notice: null };
 const DICTATION_ALLOWED_HOSTS = new Set(["claude.ai", "claude.com", "api.anthropic.com"]);
 const DICTATION_ALLOWED_ORIGINS = new Set(["https://claude.ai", "https://claude.com"]);
 let lastClientAt = null;
@@ -349,6 +411,29 @@ function localI18n(pathname) {
 const now = () => new Date().toISOString();
 const log = (...a) => LOG && console.log(`[${now()}]`, ...a);
 
+// Chat 的 completion 请求体字段随客户端版本变化：从常见位置兜底取最近一条用户文本（跳过助手消息）。
+function firstUserText(value, depth = 0) {
+  if (depth > 4 || value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && !Array.isArray(value) && typeof value.role === "string" && value.role !== "user") return "";
+  if (Array.isArray(value)) {
+    for (let i = value.length - 1; i >= 0; i -= 1) {
+      const text = firstUserText(value[i], depth + 1);
+      if (text) return text;
+    }
+    return "";
+  }
+  if (typeof value === "object") {
+    for (const key of ["text", "content", "prompt", "message"]) {
+      if (Object.hasOwn(value, key)) {
+        const text = firstUserText(value[key], depth + 1);
+        if (text) return text;
+      }
+    }
+  }
+  return "";
+}
+
 function json(res, obj, code = 200, extraHeaders = {}) {
   const body = JSON.stringify(obj);
   res.writeHead(code, {
@@ -421,7 +506,7 @@ function ensureConv(uuid) {
   if (!CONV_STATE.has(uuid)) {
     CONV_STATE.set(uuid, {
       uuid,
-      name: "New conversation",
+      name: "",
       created_at: now(),
       updated_at: now(),
       chat_messages: [],
@@ -749,10 +834,43 @@ function forceCowork(result, template) {
   };
 }
 
+// claude_ai_hub_web_delivery：Claude 的合并式主页，对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。
+// 录制模板的账号在 chatwork_free_experiment 实验组里，这个开关是开的。设置里没选合并式主页时关掉它，
+// 用回有切换的经典主页。
+const HUB_DELIVERY_FEATURE_ID = "2436273311";
+function useClassicHome(result, template) {
+  if (result.org_growthbook?.hashing_algorithm === "sha256") {
+    const key = crypto.createHash("sha256").update("claude_ai_hub_web_delivery").digest("base64");
+    if (result.org_growthbook.features?.[key]) result.org_growthbook.features[key] = {
+      value: false, on: false, off: true, source: "force", experiment: null, experimentResult: null,
+    };
+  } else if (template?.org_growthbook?.features && result.org_growthbook?.features) {
+    result.org_growthbook = {
+      ...result.org_growthbook,
+      features: { ...result.org_growthbook.features, [HUB_DELIVERY_FEATURE_ID]: { defaultValue: false } },
+    };
+  }
+  // 合并式主页的代码是按 gated_imports 下发的，光关 GrowthBook 开关不够：前端看到这一项仍会装上它。
+  if (result.gated_imports?.claude_ai_hub_web_delivery) {
+    const { claude_ai_hub_web_delivery: _hub, ...rest } = result.gated_imports;
+    result.gated_imports = rest;
+  }
+}
+
 let resolvedBootstrapCache;
+// 主页问候语里带着称呼：模板里是「Local User」（脱敏时换的），按设置里的用户名换掉。
+const TEMPLATE_DISPLAY_NAME = "Local User";
+function withDisplayName(value) {
+  if (displayName === TEMPLATE_DISPLAY_NAME) return value;
+  if (typeof value === "string") return value.split(TEMPLATE_DISPLAY_NAME).join(displayName);
+  if (Array.isArray(value)) return value.map(withDisplayName);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withDisplayName(item)]));
+  return value;
+}
+
 function resolvedBootstrap() {
   if (resolvedBootstrapCache) return resolvedBootstrapCache;
-  let template = RECORDED_BOOTSTRAP ?? {};
+  let template = templateBootstrap ?? RECORDED_BOOTSTRAP ?? {};
   if (!dataManaged) {
     try { template = JSON.parse(fs.readFileSync(path.join(POC_MOCK, "bootstrap.json"), "utf8")); } catch {}
   }
@@ -770,19 +888,60 @@ function resolvedBootstrap() {
   if (uiResources?.kind === "web-cache" && Array.isArray(desktopUi.web?.modelSelectorConfig)) {
     result.model_selector_config = structuredClone(desktopUi.web.modelSelectorConfig);
   }
-  forceCowork(result, template);
+  result.hold_notice = null;
+  result.personalized_greeting = withDisplayName(result.personalized_greeting);
+  if (runtime.cowork) forceCowork(result, template);
   mergePoolModels(result);
   if (managedResources) {
     result.gated_imports_build_id = uiResources.buildId;
     result.gated_imports = structuredClone(uiResources.gatedImports);
   }
+  // Remove the experimental home only after choosing the final manifest.
+  if (!runtime.hubHome) useClassicHome(result, template);
   resolvedBootstrapCache = result;
   return result;
 }
 
 // REST 侧的会话条目：拿录制文件里的第一条当模板，叠动态字段
 let REST_CONV_TEMPLATE = null;
-function convToRest(c) {
+/**
+ * 模板里录下的 Anthropic 示例技能，内容只能从 Anthropic 下载，本地模式一个都装不上。
+ * 原样标成「已启用」的话，Claude 每次同步都要去下载、全部失败（0 downloaded / 5 failed）。
+ */
+function offlineSkills(data) {
+  if (!Array.isArray(data?.skills)) return data;
+  return { ...data, skills: data.skills.map((skill) => ({ ...skill, enabled: false })) };
+}
+
+function restTime(value, fallback) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toISOString() : fallback;
+}
+
+/**
+ * 会话详情里的消息。REST 的 /completion 记在 chat_messages；claudeai-rpc 记在 turns，
+ * 两边都要能读出来，否则从另一条路径建的会话打开就是空的。
+ */
+function restMessages(c) {
+  if (c.chat_messages?.length) return c.chat_messages;
+  const messages = [];
+  for (const turn of c.turns || []) {
+    const created = restTime(turn.created, c.created_at);
+    const entry = (uuid, sender, index, parent, text, extra = {}) => ({
+      uuid, sender, index, parent_message_uuid: parent ?? null, text,
+      content: [{ type: "text", text, citations: [] }],
+      created_at: created, updated_at: created, ...extra,
+    });
+    messages.push(entry(turn.humanId, "human", turn.humanIndex, turn.humanParent, turn.prompt || ""));
+    if (turn.complete || turn.text) {
+      messages.push(entry(turn.asstId, "assistant", turn.asstIndex, turn.humanId, turn.text || "",
+        turn.complete ? { stop_reason: turn.stopReason === "error" ? "error" : "end_turn" } : {}));
+    }
+  }
+  return messages;
+}
+
+function convToRest(c, { messages = false } = {}) {
   if (!REST_CONV_TEMPLATE) {
     try {
       if (dataManaged) throw new Error("Managed mode uses synthetic data");
@@ -791,19 +950,113 @@ function convToRest(c) {
     } catch { REST_CONV_TEMPLATE = {}; }
   }
   const live = c.turns?.some((t) => !t.complete);
+  const title = c.name && c.name !== "New conversation" ? c.name : "";
   return {
     ...REST_CONV_TEMPLATE,
     uuid: c.uuid,
     id: c.uuid,
-    name: c.name || "New conversation",
-    summary: c.name || "New conversation",
+    name: title,
+    summary: title,
     model: c.model || runtime.model,
     created_at: c.created_at,
     updated_at: c.updated_at,
-    current_leaf_message_uuid: c.leafMessageId || null,
+    current_leaf_message_uuid: c.leafMessageId || c.current_leaf_message_uuid || null,
     live_status: live ? "running" : null,
     last_settled_at: live ? null : c.updated_at,
+    ...(messages ? { chat_messages: restMessages(c) } : {}),
   };
+}
+
+function extractTitleInput(rawText) {
+  const text = typeof rawText === "string" ? rawText.trim() : "";
+  if (!text) return "";
+  const first = text.match(/^Message 1:\s*([\s\S]*?)(?:\n+\s*Message 2:|$)/i);
+  return (first ? first[1] : text).trim();
+}
+
+function fallbackSessionTitle(rawText, emptyFallback = "New task") {
+  const cleaned = extractTitleInput(rawText)
+    .replace(/^["'“”‘’`《【]+|["'“”‘’`》】]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return emptyFallback;
+  return cleaned.length > 30 ? `${cleaned.slice(0, 30)}…` : cleaned;
+}
+
+function sanitizeGeneratedTitle(raw) {
+  if (typeof raw !== "string") return "";
+  const tagged = raw.match(/<title>([\s\S]*?)<\/title>/i);
+  const line = (tagged ? tagged[1] : raw)
+    .replace(/\r?\n[\s\S]*$/, "")
+    .replace(/^["'“”‘’`*#:\s]+|["'“”‘’`*\s]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!line) return "";
+  return line.length > 80 ? `${line.slice(0, 80)}…` : line;
+}
+
+function generateSessionTitle(rawText, requestedModel, emptyFallback, callback) {
+  const input = extractTitleInput(rawText);
+  const fallback = fallbackSessionTitle(input, emptyFallback);
+  if (!input) return callback(fallback);
+  let target;
+  try {
+    target = gatewayTarget(runtime, "/v1/messages");
+  } catch {
+    return callback(fallback);
+  }
+  const model = gatewayModel(runtime, runtime.smallModel || requestedModel || runtime.model);
+  const payload = JSON.stringify({
+    model,
+    max_tokens: 128,
+    stream: false,
+    // 推理模型默认先输出 thinking，标题这种短任务会被 thinking 吃满 budget。
+    thinking: { type: "disabled" },
+    system: "Generate a concise session title (3-8 words or short Chinese phrase) in the same language as the user message. Reply with only the title, no quotes or markdown.",
+    messages: [{ role: "user", content: input.slice(0, 2000) }],
+  });
+  let settled = false;
+  const finish = (title) => {
+    if (settled) return;
+    settled = true;
+    callback(title || fallback);
+  };
+  const greq = (target.protocol === "https:" ? https : http).request(
+    {
+      hostname: target.hostname,
+      port: target.port || (target.protocol === "https:" ? 443 : 80),
+      path: target.pathname + target.search,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+        "x-api-key": runtime.key,
+        authorization: `Bearer ${runtime.key}`,
+        "anthropic-version": "2023-06-01",
+      },
+      // 网关在跑长任务时首字可能排队：标题生成等久一点，别退回“截断提示词”。
+      timeout: 20000,
+    },
+    (gres) => {
+      const chunks = [];
+      gres.on("data", (chunk) => chunks.push(chunk));
+      gres.on("end", () => {
+        if (gres.statusCode !== 200) return finish(fallback);
+        try {
+          const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          const text = Array.isArray(data.content)
+            ? data.content.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("")
+            : (typeof data.completion === "string" ? data.completion : "");
+          finish(sanitizeGeneratedTitle(text) || fallback);
+        } catch {
+          finish(fallback);
+        }
+      });
+    },
+  );
+  greq.on("timeout", () => { greq.destroy(); finish(fallback); });
+  greq.on("error", () => finish(fallback));
+  greq.end(payload);
 }
 
 function mockApi(req, res, url) {
@@ -825,7 +1078,7 @@ function mockApi(req, res, url) {
 
   const convGet = p.match(/\/chat_conversations\/([0-9a-f-]{36})$/);
   if (convGet && method === "GET") {
-    return json(res, convToRest(ensureConv(convGet[1])));
+    return json(res, convToRest(ensureConv(convGet[1]), { messages: true }));
   }
 
   // 会话列表：静态模板 + 运行期动态会话（RPC 建的）合并，按更新时间倒序
@@ -859,6 +1112,7 @@ function mockApi(req, res, url) {
       if (!dataManaged && fs.existsSync(f)) {
         try {
           const data = JSON.parse(fs.readFileSync(f, "utf8"));
+          if (slug === "skills") return json(res, offlineSkills(data));
           return slug === "account_profile"
             ? jsonWithActiveOrg(res, normalizeAccountProfile(data))
             : json(res, data);
@@ -1125,9 +1379,9 @@ function mockApi(req, res, url) {
     return json(res, { settings: {}, entries: [], items: [] });
   }
   if (/\/skills\/download-dot-skill-file/.test(p)) {
-    // 区域封锁拿不到真 zip；回空 body 让下载器安静失败而不是 parse 报错
-    res.writeHead(204, { "content-length": 0 });
-    return res.end();
+    // 技能内容在 Anthropic 服务器上，本地拿不到。列表里已经都标成未启用（offlineSkills），
+    // 用户手动打开时回一个明确的 404，而不是 204 空体（Claude 会报「Response body is null」）。
+    return json(res, { type: "error", error: { type: "not_found_error", message: "本地模式没有这个技能的内容" } }, 404);
   }
   // 登录后组织选择页的数据源；item 的 uuid 要放在客户端读的位置（否则 join 打成 /undefined/join）
   if (p === "/api/organizations/discoverable") {
@@ -1154,26 +1408,93 @@ function mockApi(req, res, url) {
   if (/^\/api\/organizations\/[^/]+$/.test(p)) {
     return json(res, ORG);
   }
+  if (/\/dust\/generate_session_title$/.test(p) && method === "POST") {
+    return readBody(req, (raw) => {
+      const body = decodeJsonBody(req, raw);
+      const firstMsg = body.first_session_message ?? body.message ?? body.prompt ?? "";
+      generateSessionTitle(firstMsg, body.model, "New task", (title) => json(res, { title }));
+    });
+  }
+  if (/\/dust\/generate_title_and_branch$/.test(p) && method === "POST") {
+    return readBody(req, (raw) => {
+      const body = decodeJsonBody(req, raw);
+      const firstMsg = body.first_session_message ?? body.message ?? body.prompt ?? "";
+      generateSessionTitle(firstMsg, body.model, "New session", (title) => {
+        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50).replace(/-+$/, "");
+        json(res, { title, branch_name: slug ? `claude/${slug}` : undefined });
+      });
+    });
+  }
   if (/\/chat_conversations$/.test(p)) {
     if (method === "GET") return json(res, [...CONV_STATE.values()].map(convToRest));
     if (method === "POST") {
-      const id = crypto.randomUUID();
-      const conv = ensureConv(id);
-      return json(res, convToRest(conv), 201);
+      return readBody(req, (raw) => {
+        const body = decodeJsonBody(req, raw);
+        const requestedId = typeof body.uuid === "string" && /^[0-9a-f-]{36}$/i.test(body.uuid)
+          ? body.uuid
+          : crypto.randomUUID();
+        const conv = ensureConv(requestedId);
+        if (typeof body.name === "string" && body.name.trim()) {
+          conv.name = body.name.trim().slice(0, 200);
+          conv.updated_at = now();
+          stateStore.flush();
+        }
+        return json(res, convToRest(conv), 201);
+      });
     }
+  }
+  const convTitleMatch = p.match(/\/chat_conversations\/([0-9a-f-]{36})\/title$/);
+  if (convTitleMatch && method === "POST") {
+    return readBody(req, (raw) => {
+      const body = decodeJsonBody(req, raw);
+      const conv = ensureConv(convTitleMatch[1]);
+      const firstHuman = conv.chat_messages.find((m) => m.sender === "human")?.text || "";
+      const source = typeof body.message_content === "string" && body.message_content.trim()
+        ? body.message_content
+        : firstHuman;
+      generateSessionTitle(source, conv.model, "New conversation", (title) => {
+        if (title) {
+          conv.name = title;
+          conv.updated_at = now();
+          stateStore.flush();
+        }
+        json(res, { title });
+      });
+    });
   }
   const convMatch = p.match(/\/chat_conversations\/([^/]+)$/);
   if (convMatch) {
-    if (CONV_STATE.has(convMatch[1])) return json(res, convToRest(ensureConv(convMatch[1])));
+    if (method === "PUT" || method === "PATCH") {
+      return readBody(req, (raw) => {
+        const body = decodeJsonBody(req, raw);
+        const conv = ensureConv(convMatch[1]);
+        if (typeof body.name === "string") {
+          conv.name = body.name.trim().slice(0, 200);
+          conv.updated_at = now();
+          stateStore.flush();
+        }
+        return json(res, convToRest(conv));
+      });
+    }
+    if (method === "DELETE") {
+      CONV_STATE.delete(convMatch[1]);
+      stateStore.flush();
+      res.writeHead(204, { "content-length": 0 });
+      return res.end();
+    }
+    if (CONV_STATE.has(convMatch[1])) return json(res, convToRest(ensureConv(convMatch[1]), { messages: true }));
     return json(res, { error: "not found" }, 404);
   }
   if (/\/completion$/.test(p)) {
-    let raw = "";
-    req.on("data", (c) => (raw += c));
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
-      let body = {};
-      try { body = JSON.parse(raw); } catch {}
-      const prompt = typeof body.prompt === "string" ? body.prompt : "";
+      const body = decodeJsonBody(req, Buffer.concat(chunks));
+      const prompt = (typeof body.prompt === "string" && body.prompt.trim() ? body.prompt : "")
+        || firstUserText(body.messages)
+        || firstUserText(body.message)
+        || firstUserText(body.content)
+        || "";
       const human = body.turn_message_uuids?.human_message_uuid || crypto.randomUUID();
       const asst = body.turn_message_uuids?.assistant_message_uuid || crypto.randomUUID();
       const model = gatewayModel(runtime, body.model || process.env.GATEWAY_MODEL);
@@ -1194,11 +1515,29 @@ function mockApi(req, res, url) {
       const conv = convUuid ? ensureConv(convUuid) : null;
       if (conv && !conv.chat_messages.some((m) => m.uuid === human)) {
         pushMessage(conv, { uuid: human, sender: "human", text: prompt });
+        if ((!conv.name || conv.name === "New conversation") && prompt.trim()) {
+          const compact = prompt.replace(/\s+/g, " ").trim();
+          conv.name = compact.length > 30 ? `${compact.slice(0, 30)}…` : compact;
+          stateStore.changed();
+        }
       }
       let acc = "";
+      let settled = false;
+      // 上游出错时把原因写进回复里：只发 error 事件的话，Claude 只会显示「连接已中断」。
+      const fail = (message) => {
+        if (settled) return;
+        settled = true;
+        log(`completion failed${runtime.managed ? "" : `: ${message}`}`);
+        const text = `${acc ? "\n\n" : ""}[网关错误：${message}]`;
+        sendEv("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
+        sendEv("content_block_stop", { type: "content_block_stop", index: 0 });
+        sendEv("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" } });
+        sendEv("message_stop", { type: "message_stop" });
+        res.end();
+      };
       const payload = JSON.stringify({
         model,
-        max_tokens: 2048,
+        max_tokens: 4096,
         stream: true,
         messages: conv ? conv.chat_messages.map((message) => ({
           role: message.sender === "human" ? "user" : "assistant", content: message.text,
@@ -1220,41 +1559,53 @@ function mockApi(req, res, url) {
           },
         },
         (gres) => {
-          let buf = "";
-          gres.on("data", (chunk) => {
-            buf += chunk.toString("utf8");
-            let i;
-            while ((i = buf.indexOf("\n\n")) >= 0) {
-              const ev = buf.slice(0, i);
-              buf = buf.slice(i + 2);
-              const dataLine = ev.split("\n").find((l) => l.startsWith("data:"));
-              if (!dataLine) continue;
-              let d;
-              try { d = JSON.parse(dataLine.slice(5).trim()); } catch { continue; }
-              if (d.type === "content_block_delta" && d.delta?.type === "text_delta") {
-                acc += d.delta.text;
-                sendEv("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: d.delta.text } });
-              } else if (d.type === "message_stop") {
-                if (conv && !conv.chat_messages.some((m) => m.uuid === asst)) {
-                  pushMessage(conv, { uuid: asst, sender: "assistant", parent: human, text: acc, stop_reason: "end_turn" });
-                  stateStore.flush();
-                }
-                sendEv("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" } });
-                sendEv("message_stop", { type: "message_stop" });
-                res.end();
+          if (gres.statusCode < 200 || gres.statusCode >= 300) {
+            const chunks = [];
+            let size = 0;
+            gres.on("data", (c) => { if (size < 65536) { chunks.push(c); size += c.length; } });
+            gres.on("end", () => fail(gatewayHttpError(gres.statusCode, Buffer.concat(chunks))));
+            gres.on("error", (e) => fail(e.message));
+            return;
+          }
+          const parser = createGatewayStreamParser({
+            text: (text) => {
+              if (settled) return;
+              acc += text;
+              sendEv("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
+            },
+            stop: () => {
+              if (settled) return;
+              settled = true;
+              if (conv && !conv.chat_messages.some((m) => m.uuid === asst)) {
+                pushMessage(conv, { uuid: asst, sender: "assistant", parent: human, text: acc, stop_reason: "end_turn" });
+                stateStore.flush();
               }
-            }
+              sendEv("content_block_stop", { type: "content_block_stop", index: 0 });
+              sendEv("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" } });
+              sendEv("message_stop", { type: "message_stop" });
+              res.end();
+            },
+            error: fail,
           });
-          gres.on("end", () => { try { res.end(); } catch {} });
+          gres.on("data", (chunk) => parser.write(chunk));
+          gres.on("end", () => parser.end());
+          gres.on("error", (e) => fail(e.message));
         },
       );
-      greq.on("error", (e) => {
-        sendEv("error", { type: "error", error: { message: e.message } });
-        try { res.end(); } catch {}
-      });
+      greq.setTimeout(300_000, () => greq.destroy(new Error("上游超时：5 分钟没有响应")));
+      greq.on("error", (e) => fail(e.message));
+      res.on("close", () => { if (!settled) { settled = true; greq.destroy(); } });
       greq.end(payload);
     });
     return;
+  }
+  // 这两个接口 Claude 用 zod 校验：通用兜底的 {} 会报「Invalid BFF response format」，
+  // Cowork 提交任务时直接中断（来自 PR #8 的排查）。
+  if (method === "GET" && p === "/api/directory/servers") {
+    return json(res, { servers: [], next_cursor: null });
+  }
+  if (method === "GET" && /^\/api\/organizations\/[^/]+\/activation\/[^/]+\/tasks$/.test(p)) {
+    return json(res, { tasks: [] });
   }
   if (/\/completion_status/.test(p)) {
     return json(res, { is_pending: false, is_error: false });
@@ -1292,14 +1643,26 @@ function isHashedStaticAsset(req, url) {
     /\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:m?js|css|wasm|woff2?|ttf|otf|png|jpe?g|webp|gif|svg|ico)$/.test(url.pathname);
 }
 
-function bufferedResponseHeaders(headers, length) {
+function withoutHopByHop(headers) {
   const result = { ...headers };
   const connectionHeaders = String(result.connection || "").split(",").map((name) => name.trim().toLowerCase());
   for (const name of ["connection", "transfer-encoding", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade", ...connectionHeaders]) {
     delete result[name];
   }
+  return result;
+}
+
+function bufferedResponseHeaders(headers, length) {
+  const result = withoutHopByHop(headers);
   // Buffer 未解压，保留 content-encoding 并以实际传输字节数更新长度。
   result["content-length"] = length;
+  return result;
+}
+
+/** 原样转发的响应头：上游给了长度就沿用（下载器靠它显示进度），分块传输由 Node 重新分块。 */
+function streamedResponseHeaders(headers) {
+  const result = withoutHopByHop(headers);
+  if (headers["transfer-encoding"]) delete result["content-length"];
   return result;
 }
 
@@ -1328,6 +1691,24 @@ function readBody(req, cb) {
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => cb(Buffer.concat(chunks)));
   req.on("error", () => cb(Buffer.alloc(0)));
+}
+
+// Chat 的 completion 请求体可能被客户端按 gzip/br/deflate 压缩；直接 JSON.parse 会得到 {}。
+function decodeJsonBody(req, raw) {
+  const encoding = String(req.headers["content-encoding"] || "").toLowerCase().trim();
+  let bytes = raw;
+  try {
+    if (encoding === "gzip" || encoding === "x-gzip") bytes = zlib.gunzipSync(raw);
+    else if (encoding === "br") bytes = zlib.brotliDecompressSync(raw);
+    else if (encoding === "deflate") bytes = zlib.inflateSync(raw);
+  } catch {
+    bytes = raw;
+  }
+  try {
+    return JSON.parse(bytes.toString("utf8") || "{}");
+  } catch {
+    return {};
+  }
 }
 
 // 文档导航判定：GET + 无扩展名 + 显式要 HTML。/api|/v1|/edge-api 等接口路径在此前分支已返回。
@@ -1457,42 +1838,108 @@ function isLoopbackHost(hostname) {
   return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(String(hostname).toLowerCase());
 }
 
-/** 发往上游网页的请求：https 且配置了出站代理时先 CONNECT 打通隧道，再在隧道上做 TLS。 */
-function upstreamRequest(target, options, callback) {
-  const client = target.protocol === "http:" ? http : https;
-  if (!UPSTREAM_PROXY || target.protocol !== "https:" || isLoopbackHost(target.hostname)) {
-    return client.request(options, callback);
-  }
-  const port = Number(options.port || 443);
-  const authority = `${options.hostname}:${port}`;
-  const proxyAuth = UPSTREAM_PROXY.username
+function upstreamProxyAuth() {
+  return UPSTREAM_PROXY?.username
     ? { "proxy-authorization": `Basic ${Buffer.from(`${decodeURIComponent(UPSTREAM_PROXY.username)}:${decodeURIComponent(UPSTREAM_PROXY.password)}`).toString("base64")}` }
     : {};
-  return https.request({
-    ...options,
-    agent: undefined,
-    // ClientRequest 支持回调式 createConnection：隧道建好后再交出 TLS socket。
-    createConnection: (_options, done) => {
-      const connect = http.request({
-        host: UPSTREAM_PROXY.hostname,
-        port: Number(UPSTREAM_PROXY.port || 80),
-        method: "CONNECT",
-        path: authority,
-        headers: { host: authority, ...proxyAuth },
-        timeout: options.timeout || 20000,
-      });
-      connect.once("connect", (response, socket) => {
-        if (response.statusCode !== 200) {
-          socket.destroy();
-          return done(new Error(`upstream proxy CONNECT ${response.statusCode}`));
-        }
-        done(null, tls.connect({ socket, servername: options.hostname }));
-      });
-      connect.once("timeout", () => connect.destroy(new Error("upstream proxy timeout")));
-      connect.once("error", (error) => done(error));
-      connect.end();
-    },
-  }, callback);
+}
+
+// 发往上游网页的请求共用连接池：首次启动（或线上页面换版本后）要补拉上千个前端资源，
+// 逐个新建连接会在代理软件 / 防火墙里刷出上千条 node 连接。每个主机最多并发这么多条，
+// 用完的连接留着复用，空闲一段时间后关掉。
+const UPSTREAM_MAX_SOCKETS_PER_HOST = 16;
+const UPSTREAM_IDLE_SOCKET_MS = 30_000;
+const UPSTREAM_POOL = { keepAlive: true, maxSockets: UPSTREAM_MAX_SOCKETS_PER_HOST, timeout: UPSTREAM_IDLE_SOCKET_MS };
+
+/** 隧道还没打通时先替它收着 TLS 握手数据；打通后接上，两边原样转发。 */
+class PendingTunnel extends Duplex {
+  constructor() {
+    super();
+    this.socket = null;
+    this.queued = [];
+    this.finalCallback = null;
+  }
+  attach(socket) {
+    if (this.destroyed) return socket.destroy();
+    this.socket = socket;
+    socket.on("data", (chunk) => {
+      if (!this.push(chunk)) socket.pause();
+    });
+    socket.once("end", () => this.push(null));
+    socket.once("error", (error) => this.destroy(error));
+    socket.once("close", () => this.destroy());
+    for (const [chunk, encoding, callback] of this.queued) socket.write(chunk, encoding, callback);
+    this.queued = [];
+    if (this.finalCallback) {
+      socket.end();
+      this.finalCallback();
+    }
+  }
+  _read() {
+    this.socket?.resume();
+  }
+  _write(chunk, encoding, callback) {
+    if (this.socket) this.socket.write(chunk, encoding, callback);
+    else this.queued.push([chunk, encoding, callback]);
+  }
+  _final(callback) {
+    if (this.socket) {
+      this.socket.end();
+      callback();
+    } else {
+      this.finalCallback = callback;
+    }
+  }
+  _destroy(error, callback) {
+    this.socket?.destroy();
+    callback(error);
+  }
+}
+
+/**
+ * 经出站代理的连接池：新连接先 CONNECT 打通隧道，再在隧道上做 TLS；建好的连接照常复用。
+ * createConnection 必须同步交出 socket，连接池才会立刻把它计入 maxSockets
+ * （回调式异步交出时，隧道打通前的并发请求每个都会再开一条）。
+ */
+class UpstreamTunnelAgent extends https.Agent {
+  createConnection(options) {
+    const host = options.hostname || options.host;
+    const authority = `${host}:${Number(options.port || 443)}`;
+    const tunnel = new PendingTunnel();
+    const connect = http.request({
+      host: UPSTREAM_PROXY.hostname,
+      port: Number(UPSTREAM_PROXY.port || 80),
+      method: "CONNECT",
+      path: authority,
+      headers: { host: authority, ...upstreamProxyAuth() },
+      agent: false,
+      timeout: 20000,
+    });
+    connect.once("connect", (response, socket, head) => {
+      if (response.statusCode !== 200) {
+        socket.destroy();
+        return tunnel.destroy(new Error(`upstream proxy CONNECT ${response.statusCode}`));
+      }
+      if (head?.length) socket.unshift(head);
+      tunnel.attach(socket);
+    });
+    connect.once("timeout", () => connect.destroy(new Error("upstream proxy timeout")));
+    connect.once("error", (error) => tunnel.destroy(error));
+    // 请求方先放弃（TLS 连接被销毁）时，没打通的 CONNECT 一并取消。
+    tunnel.once("close", () => connect.destroy());
+    connect.end();
+    return tls.connect({ socket: tunnel, servername: options.servername || host });
+  }
+}
+
+const directAgent = new https.Agent(UPSTREAM_POOL);
+const tunnelAgent = UPSTREAM_PROXY ? new UpstreamTunnelAgent(UPSTREAM_POOL) : null;
+
+/** 发往上游网页的请求：https 走连接池，配置了出站代理时经代理隧道（本机地址一律直连）。 */
+function upstreamRequest(target, options, callback) {
+  if (target.protocol !== "https:") return http.request(options, callback);
+  const viaProxy = tunnelAgent && !isLoopbackHost(target.hostname);
+  return https.request({ ...options, agent: viaProxy ? tunnelAgent : directAgent }, callback);
 }
 
 function proxyUpstream(req, res, url) {
@@ -1509,6 +1956,9 @@ function proxyUpstream(req, res, url) {
   const headers = { ...req.headers, host: url.host || target.host };
   delete headers["proxy-connection"];
   delete headers["accept-encoding"];
+  // 逐跳头只管 Claude 与本代理之间那一段；转给上游会让它每回一个请求就关连接，连接池复用不了。
+  delete headers.connection;
+  delete headers["keep-alive"];
 
   const upstreamReq = upstreamRequest(
     target,
@@ -1521,6 +1971,16 @@ function proxyUpstream(req, res, url) {
       timeout: 20000,
     },
     (up) => {
+      if (!canCache) {
+        // 边收边转：Claude Code 安装包（上百 MB）、Cowork 虚拟机镜像（GB 级）以前要整个读进内存才开始回，
+        // 下载器在这段时间收不到一个字节，空闲超时（IDLE_TIMEOUT）就放弃了。
+        res.writeHead(up.statusCode, streamedResponseHeaders(up.headers));
+        up.pipe(res);
+        res.on("close", () => { if (!up.complete) upstreamReq.destroy(); });
+        up.on("close", () => { if (!up.complete) res.destroy(); });
+        return;
+      }
+      // 要缓存的只有带哈希的静态资源和页面，都不大：收齐再回，和之后从缓存回放的字节、长度一致。
       const chunks = [];
       up.on("data", (c) => chunks.push(c));
       up.on("end", () => {
@@ -1528,7 +1988,7 @@ function proxyUpstream(req, res, url) {
         const ok = up.statusCode >= 200 && up.statusCode < 400;
         // 文档路由不缓存桩体/落地页 HTML（登出页会让 SPA 卡骨架屏）
         const docStub = isDocNav(req, url) && body.length < 4096;
-        if (ok && !docStub && canCache && (!staticAsset || (
+        if (ok && !docStub && (!staticAsset || (
           up.statusCode === 200 && !up.headers["set-cookie"] &&
           !/\b(?:private|no-store)\b/i.test(String(up.headers["cache-control"] || ""))
         ))) {
@@ -1546,6 +2006,11 @@ function proxyUpstream(req, res, url) {
   );
   upstreamReq.on("timeout", () => upstreamReq.destroy(new Error("upstream timeout")));
   upstreamReq.on("error", (err) => {
+    if (res.headersSent) {
+      // 已经开始转发了，没法再换成兜底响应；断开让客户端知道没收全。
+      log(`UPSTREAM FAIL ${url.pathname} (mid-stream): ${err.message}`);
+      return res.destroy();
+    }
     if (serveCachedStaticAsset(req, res, url)) return;
     // 动态接口不能回放其它会话的缓存；文档仍沿用本地外壳兜底。
     if (canCache && document && fs.existsSync(cp) && fs.existsSync(metaPath)) {
@@ -1703,7 +2168,7 @@ function handle(req, res, hostHeader) {
     }
   }
 
-  // Fresh受管profile直接使用安装包内同一版本的官方SPA和静态资源，不依赖旧HTML录制缓存。
+  // Serve the selected coherent UI before generic template/cache fallbacks.
   if (
     managedResources &&
     MODE === "mock" &&
@@ -1807,7 +2272,7 @@ function handle(req, res, hostHeader) {
       }
       // 远端托管策略：本地空放行（不挡插件/连接器）。
       // CLI 比 Desktop 校验更严格，settings 响应必须包含 uuid/checksum/settings。
-      // policy_limits → {restrictions:[],compliance_taints:[],defaults:{}}（BymwSUZ2 校验器）
+      // policy_limits → {restrictions:{},compliance_taints:[],defaults:{}}（BymwSUZ2 校验器）
       if (/^\/api\/claude_code\/settings/.test(url.pathname)) {
         const body = JSON.stringify({ uuid: ORG.uuid, settings: {}, content: { entries: {} }, checksum: "local-1" });
         res.writeHead(200, {
@@ -1819,7 +2284,7 @@ function handle(req, res, hostHeader) {
         return res.end(body);
       }
       if (/^\/api\/claude_code\/policy_limits/.test(url.pathname)) {
-        return json(res, { restrictions: [], compliance_taints: [], defaults: {}, artifact_create_notice: null });
+        return json(res, POLICY_LIMITS);
       }
       // token 计数：网关不一定实现，本地估算
       if (req.method === "POST" && url.pathname === "/v1/messages/count_tokens") {
@@ -1870,7 +2335,7 @@ function handle(req, res, hostHeader) {
     return res.end(body);
   }
   if (MODE !== "passthrough" && /^\/api\/claude_code\/policy_limits/.test(url.pathname)) {
-    return json(res, { restrictions: [], compliance_taints: [], defaults: {}, artifact_create_notice: null });
+    return json(res, POLICY_LIMITS);
   }
   if (MODE !== "passthrough" && /^\/api\/claude_cli\/bootstrap/.test(url.pathname)) {
     return json(res, { client_data: {}, settings: {}, config: {}, enabled: true, environments: [], sessions: [], plugins: [], items: [], data: [] });
@@ -1887,6 +2352,21 @@ function handle(req, res, hostHeader) {
   if (MODE === "mock" && ["/", "/login", "/app-unavailable-in-region"].includes(url.pathname)) {
     res.writeHead(302, { location: "/new", "content-length": 0 });
     return res.end();
+  }
+  // 不看 Accept：Claude 加载主界面 /epitaxy 时不带 text/html，按 isDocNav 判断会漏掉、落到线上兜底。
+  if (
+    MODE === "mock" && TEMPLATE_SHELL && isMainClaudeHost &&
+    req.method === "GET" &&
+    !path.extname(url.pathname) &&
+    !/^\/(?:api|edge-api|v1|claudeai-rpc)(?:\/|$)/.test(url.pathname)
+  ) {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": TEMPLATE_SHELL.length,
+      "cache-control": "no-store",
+      ...(url.pathname === "/new" ? { "set-cookie": activeOrgCookies() } : {}),
+    });
+    return res.end(TEMPLATE_SHELL);
   }
   if (MODE === "mock" && url.pathname === "/new") {
     const key = crypto.createHash("sha1").update("claude.ai/login").digest("hex");
@@ -2008,9 +2488,7 @@ function dictationLanguage(requestUrl) {
 function readDictationReceipt() {
   const receiptPath = path.join(APP_STATE_DIR, "dictation-helper.json");
   try {
-    const metadata = fs.lstatSync(receiptPath);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) return null;
-    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) return null;
+    if (!isPrivateFile(fs.lstatSync(receiptPath))) return null;
     const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
     if (
       !Number.isInteger(receipt.port) || receipt.port < 1 || receipt.port > 65535 ||
@@ -2212,7 +2690,7 @@ const outer = http.createServer((req, res) => {
     return json(res, { client_data: {}, settings: {}, config: {}, enabled: true, environments: [], sessions: [], plugins: [], items: [], data: [] });
   }
   if (/^\/api\/claude_code\/policy_limits/.test(u.pathname)) {
-    return json(res, { restrictions: [], compliance_taints: [], defaults: {}, artifact_create_notice: null });
+    return json(res, POLICY_LIMITS);
   }
   if (/^\/api\/claude_code\//.test(u.pathname)) {
     const body = JSON.stringify({ uuid: ORG.uuid, settings: {}, content: { entries: {} }, checksum: "local-1" });
@@ -2230,6 +2708,79 @@ const MITM_HOSTS = runtime.managed
   ? /(^|\.)(claude\.ai|claude\.com|anthropic\.com)$/i
   : /(^|\.)(claude\.ai|claude\.com|anthropic\.com|ccbobi\.com)$/i;
 
+const PASS_THROUGH_CONNECT_TIMEOUT_MS = 15_000;
+
+// 非 claude 域名的 TCP 隧道。Claude 被 --proxy-server 指到本代理后，这些域名（统计、错误上报、
+// 第三方 CDN 等）也都经过这里：
+// - Claude 一侧关闭（含 RST）或任一侧出错：两侧立即一起关。只看上游出错会把上游连接一直留着。
+// - 上游正常关闭：交给 pipe 把剩余数据写完再关 Claude 一侧，不截断。
+// - 连不上的目标限时放弃；Claude 先放弃时同时取消还没连上的连接，不在后台继续连。
+// - 配了出站代理时经它 CONNECT：系统代理对 Claude 已失效，直连在受限网络里连不上，越积越多。
+function passThrough(clientSocket, host, port, head) {
+  let upstream = null;
+  let pending = null;
+  let open = false;
+  let done = false;
+  const teardown = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    pending?.destroy();
+    upstream?.destroy();
+    clientSocket.destroy();
+  };
+  const timer = setTimeout(teardown, PASS_THROUGH_CONNECT_TIMEOUT_MS);
+  clientSocket.once("close", teardown);
+  // CONNECT 交过来的 socket 没人读，Claude 断开时这里收不到 FIN/RST。隧道建好前先读着：
+  // 早到的数据暂存，建好后补发；Claude 在这期间关掉就立刻取消。
+  const early = [];
+  const onEarlyData = (chunk) => early.push(chunk);
+  const onEarlyEnd = () => teardown();
+  clientSocket.on("data", onEarlyData);
+  clientSocket.once("end", onEarlyEnd);
+  const attach = (socket) => {
+    upstream = socket;
+    socket.on("error", teardown);
+    socket.once("close", (hadError) => {
+      if (hadError || !open) teardown();
+    });
+  };
+  const established = (upstreamHead) => {
+    if (done) return;
+    open = true;
+    clearTimeout(timer);
+    clientSocket.off("data", onEarlyData);
+    clientSocket.off("end", onEarlyEnd);
+    clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (upstreamHead?.length) clientSocket.write(upstreamHead);
+    if (head?.length) upstream.write(head);
+    for (const chunk of early) upstream.write(chunk);
+    upstream.pipe(clientSocket);
+    clientSocket.pipe(upstream);
+  };
+
+  if (UPSTREAM_PROXY && !isLoopbackHost(host)) {
+    const authority = `${host}:${port}`;
+    pending = http.request({
+      host: UPSTREAM_PROXY.hostname,
+      port: Number(UPSTREAM_PROXY.port || 80),
+      method: "CONNECT",
+      path: authority,
+      headers: { host: authority, ...upstreamProxyAuth() },
+    });
+    pending.once("connect", (response, socket, upstreamHead) => {
+      pending = null;
+      attach(socket);
+      if (response.statusCode !== 200) return teardown();
+      established(upstreamHead);
+    });
+    pending.once("error", teardown);
+    pending.end();
+    return;
+  }
+  attach(net.connect(Number(port), host, () => established()));
+}
+
 outer.on("connect", (req, clientSocket, head) => {
   noteClient();
   clientSocket.on("error", () => {});
@@ -2237,14 +2788,7 @@ outer.on("connect", (req, clientSocket, head) => {
   // 非 claude 域名：TCP 直通，不终止 TLS（保证 CDN / 其他服务不受影响）
   if (!MITM_HOSTS.test(host)) {
     log(`PASS-THROUGH CONNECT ${host}:${port}`);
-    const upstream = net.connect(Number(port), host, () => {
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      if (head?.length) upstream.write(head);
-      upstream.pipe(clientSocket);
-      clientSocket.pipe(upstream);
-    });
-    upstream.on("error", () => clientSocket.destroy());
-    return;
+    return passThrough(clientSocket, host, port, head);
   }
   clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
   const tlsSocket = new tls.TLSSocket(clientSocket, {

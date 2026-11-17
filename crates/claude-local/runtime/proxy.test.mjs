@@ -33,6 +33,9 @@ let dictationCacheDir;
 let dictationAssetPath;
 let dictationUpgrade;
 let dictationFrame;
+const streamFixtureSize = 4 * 1024 * 1024;
+let streamFixture;
+let streamFixtureReady;
 
 async function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -307,6 +310,14 @@ before(async () => {
   // 假上游：记录代理转发过来的 host 头与路径
   upstreamFixture = http.createServer((req, res) => {
     upstreamRequests.push({ host: req.headers.host, url: req.url });
+    if (req.url.startsWith("/stream-fixture/")) {
+      // 先发一段就停住，等测试放行才发完：本地服务必须边收边转，不能等整包到齐。
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": streamFixtureSize });
+      res.write(Buffer.alloc(streamFixtureSize / 2, 1));
+      streamFixture = { res, closed: once(res, "close") };
+      streamFixtureReady?.();
+      return;
+    }
     if (req.url === cdnAssetPath) {
       res.writeHead(200, {
         "content-type": "text/javascript; charset=utf-8",
@@ -524,7 +535,11 @@ test("Desktop receives the native Computer Use rollout without enabling permissi
   assert.equal(result.body.features["1291166712"].on, true);
   assert.equal(result.body.features["1291166712"].off, false);
   assert.equal(result.body.features["1291166712"].source, "force");
-  assert.deepEqual(Object.keys(result.body.features), ["1291166712"]);
+  // Windows 上计算机使用还要过 40173473 这道门，否则设置页说「账户尚未启用」。
+  assert.equal(result.body.features["40173473"].value, true);
+  assert.equal(result.body.features["40173473"].on, true);
+  assert.equal(result.body.features["40173473"].off, false);
+  assert.deepEqual(Object.keys(result.body.features).sort(), ["1291166712", "40173473"]);
   assert.equal(result.body.chicagoEnabled, undefined);
 });
 
@@ -693,6 +708,52 @@ test("upstream requests keep their original host instead of being rewritten to c
   assert.equal(seen.url, "/claude-code-releases/2.1.317/darwin-arm64/claude.app.tar.zst");
 });
 
+async function openDownload(host, pathname) {
+  const connect = http.request({
+    hostname: "127.0.0.1", port: proxyPort, method: "CONNECT", path: `${host}:443`,
+  });
+  connect.end();
+  const [, socket] = await once(connect, "connect");
+  const secure = tls.connect({ socket, servername: host, ca: fs.readFileSync(path.join(here, "ca/ca.pem")) });
+  await once(secure, "secureConnect");
+  const agent = new https.Agent({ keepAlive: false });
+  agent.createConnection = () => secure;
+  const req = https.request({ hostname: host, path: pathname, method: "GET", agent });
+  req.end();
+  const [res] = await once(req, "response");
+  return { req, res, secure };
+}
+
+test("large downloads are forwarded while they arrive instead of after the whole body", async () => {
+  const ready = new Promise((resolve) => { streamFixtureReady = resolve; });
+  const { res, secure } = await openDownload("downloads.claude.ai", "/stream-fixture/claude.zip");
+  await ready;
+  assert.equal(res.statusCode, 200);
+  assert.equal(Number(res.headers["content-length"]), streamFixtureSize);
+  let received = 0;
+  res.on("data", (chunk) => { received += chunk.length; });
+  // 上游还没发完，Claude 这边就已经收到前一半了（以前要等整包，下载器先空闲超时）。
+  const deadline = Date.now() + 5000;
+  while (received < streamFixtureSize / 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(received, streamFixtureSize / 2);
+  streamFixture.res.end(Buffer.alloc(streamFixtureSize / 2, 2));
+  await once(res, "end");
+  assert.equal(received, streamFixtureSize);
+  secure.destroy();
+});
+
+test("abandoning a forwarded download closes the upstream request", async () => {
+  const ready = new Promise((resolve) => { streamFixtureReady = resolve; });
+  const { res, secure } = await openDownload("downloads.claude.ai", "/stream-fixture/abandoned.zip");
+  await ready;
+  await once(res, "data");
+  secure.destroy();
+  await Promise.race([
+    streamFixture.closed,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("upstream download left open")), 5000)),
+  ]);
+});
+
 test("hashed CDN assets replay cached compressed bytes before contacting the upstream", async () => {
   const before = upstreamRequests.length;
   const first = await requestText("assets-proxy.anthropic.com", cdnAssetPath);
@@ -745,6 +806,48 @@ test("model requests strip diagnostics and preserve the rest of the payload", as
   });
   assert.equal(result.status, 200);
   assert.deepEqual(gatewayRequests.at(-1), { path: "/v1/messages?beta=true", body: payload });
+});
+
+for (const host of [undefined, "api.anthropic.com", "claude.ai"]) {
+  test(`policy limits keep the object shape the desktop validator expects over ${host || "direct HTTP"}`, async () => {
+    const result = await request("/api/claude_code/policy_limits", { host });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.restrictions, {});
+    assert.deepEqual(result.body.compliance_taints, []);
+  });
+}
+
+test("chat and cowork session title endpoints generate and persist titles via gateway", async () => {
+  const created = await request("/api/organizations/11111111-2222-4333-8444-555555555556/chat_conversations", {
+    host: "claude.ai",
+    body: {},
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.name, "");
+
+  const titled = await request(
+    `/api/organizations/11111111-2222-4333-8444-555555555556/chat_conversations/${created.body.uuid}/title`,
+    {
+      host: "claude.ai",
+      body: { message_content: "Message 1: Golden Gate Bridge presentation\n\nMessage 2: Sure!", recent_titles: [] },
+    },
+  );
+  assert.equal(titled.status, 200);
+  assert.equal(titled.body.title, "ok");
+
+  const fetched = await request(
+    `/api/organizations/11111111-2222-4333-8444-555555555556/chat_conversations/${created.body.uuid}`,
+    { host: "claude.ai" },
+  );
+  assert.equal(fetched.status, 200);
+  assert.equal(fetched.body.name, "ok");
+
+  const coworkTitle = await request(
+    "/api/organizations/11111111-2222-4333-8444-555555555556/dust/generate_session_title",
+    { host: "claude.ai", body: { first_session_message: "Build a Golden Gate Bridge PowerPoint", surface: "cowork" } },
+  );
+  assert.equal(coworkTitle.status, 200);
+  assert.equal(coworkTitle.body.title, "ok");
 });
 
 test("document navigations replay the app shell rather than logged-out landing stubs", async () => {

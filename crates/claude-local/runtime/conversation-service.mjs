@@ -10,7 +10,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import https from "node:https";
-import { gatewayModel, gatewayTarget, runtimeConfig } from "./runtime.mjs";
+import { createGatewayStreamParser, gatewayHttpError, gatewayModel, gatewayTarget, runtimeConfig } from "./runtime.mjs";
 import {
   decode, get, asStr, asMsg, asInt, ld, vi,
   requestMessages, frame, endFrame,
@@ -33,6 +33,7 @@ function anthropicStream(messages, model, signal) {
   let notify = null;
   let done = false, failed = null;
   const push = (v) => { queue.push(v); const n = notify; notify = null; n?.(); };
+  const fail = (e) => { failed ??= e; done = true; const n = notify; notify = null; n?.(); };
   const payload = JSON.stringify({
     model: gatewayModel(runtime, model), max_tokens: 4096, stream: true, messages,
   });
@@ -52,36 +53,26 @@ function anthropicStream(messages, model, signal) {
       },
     },
     (res) => {
-      if (res.statusCode >= 400) {
-        res.resume();
-        res.on("end", () => {
-          failed = new Error(`gateway HTTP ${res.statusCode}`);
-          done = true; const n = notify; notify = null; n?.();
-        });
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        const chunks = [];
+        let size = 0;
+        res.on("data", (c) => { if (size < 65536) { chunks.push(c); size += c.length; } });
+        res.on("end", () => fail(new Error(gatewayHttpError(res.statusCode, Buffer.concat(chunks)))));
+        res.on("error", fail);
         return;
       }
-      let buf = "";
-      res.on("data", (c) => {
-        buf += c.toString("utf8");
-        let i;
-        while ((i = buf.indexOf("\n\n")) >= 0) {
-          const ev = buf.slice(0, i); buf = buf.slice(i + 2);
-          const line = ev.split("\n").find((l) => l.startsWith("data:"));
-          if (!line) continue;
-          const data = line.slice(5).trim();
-          if (data === "[DONE]") continue;
-          let d; try { d = JSON.parse(data); } catch { continue; }
-          if (d.type === "content_block_delta" && d.delta?.type === "text_delta") push(d.delta.text);
-          else if (d.type === "message_stop") push({ end: true });
-          else if (d.type === "error") failed = new Error("gateway stream error");
-        }
+      const parser = createGatewayStreamParser({
+        text: push,
+        stop: () => push({ end: true }),
+        error: (message) => fail(new Error(message)),
       });
-      res.on("end", () => { done = true; const n = notify; notify = null; n?.(); });
-      res.on("error", (e) => { failed = e; done = true; const n = notify; notify = null; n?.(); });
+      res.on("data", (c) => parser.write(c));
+      res.on("end", () => { parser.end(); done = true; const n = notify; notify = null; n?.(); });
+      res.on("error", fail);
     },
   );
-  req.on("timeout", () => req.destroy(new Error("gateway timeout")));
-  req.on("error", (e) => { failed = e; done = true; const n = notify; notify = null; n?.(); });
+  req.on("timeout", () => req.destroy(new Error("上游超时：5 分钟没有响应")));
+  req.on("error", fail);
   if (signal) signal.addEventListener("abort", () => { try { req.destroy(); } catch {} });
   req.end(payload);
   return {
@@ -236,7 +227,7 @@ export function createConversationService({ ensureConv, listConvs, log, onChange
         conv: conversation({
           id: conv.uuid,
           model: conv.model,
-          title: conv.name !== "New conversation" ? conv.name : undefined,
+          title: conv.name && conv.name !== "New conversation" ? conv.name : undefined,
           status: 1, leaf: turn.asstId,
           created: conv.created_at ? new Date(conv.created_at) : undefined,
           updated: new Date(conv.updated_at),

@@ -2,9 +2,23 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
-export function selectUiResources(officialAssets, cacheDir, webReference) {
-  const fallback = { kind: "installed", buildId: officialAssets.buildId, html: officialAssets.indexHtml,
+export function selectUiResources(officialAssets, cacheDir, webReference, template) {
+  let fallback = { kind: "installed", buildId: officialAssets.buildId, html: officialAssets.indexHtml,
     gatedImports: officialAssets.gatedImports };
+  // A recording is a unit: shell + bootstrap + dependency manifest. Never
+  // combine a new upstream shell with another recording's lazy modules.
+  if (typeof template?.html === "string" && template.html.length >= 4096 && template.html.length <= 4 * 1024 * 1024) {
+    const buildId = template.html.match(/<html\b[^>]*\bdata-build-id="([^"]+)"/i)?.[1];
+    const bootstrap = template.bootstrap;
+    if (buildId && bootstrap?.gated_imports_build_id === buildId && bootstrap.gated_imports &&
+        typeof bootstrap.gated_imports === "object" && !Array.isArray(bootstrap.gated_imports)) {
+      fallback = { kind: "recorded-template", buildId, html: template.html, gatedImports: bootstrap.gated_imports };
+      if (template.selected) return fallback;
+    }
+  }
+  // Keep the owner's matched official-login reference by default. An explicit
+  // recording selection wins; otherwise a packaged recording precedes the
+  // installed resources when there is no usable official reference.
   if (!webReference) return fallback;
   const key = crypto.createHash("sha1").update("claude.ai/epitaxy").digest("hex");
   try {
