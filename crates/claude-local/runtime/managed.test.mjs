@@ -1066,6 +1066,19 @@ test("Cowork BFF lists keep the shapes Claude validates", async () => {
   assert.deepEqual(tasks.json, { tasks: [] });
 });
 
+test("organization browser capability does not fall through to an empty response", async () => {
+  for (const org of ["local", "e0e877d3-8475-44a1-a501-4fc431b085ab"]) {
+    const result = await request(service, `/api/organizations/${org}/cowork_settings`, { host: "claude.ai" });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.json, { browser_pane_enabled: true });
+    assert.equal(result.headers["cache-control"], "no-store");
+  }
+  // Availability must not opt the person into all-site consent or change the
+  // independent Code launch toggle or other tools' permission modes.
+  const consent = await request(service, "/__codex_plus/browser-site-consent.json", { host: "claude.ai" });
+  assert.deepEqual(consent.json, { allowAllBrowserSites: false });
+});
+
 test("REST completions show the upstream's error in the reply and end the stream properly", async () => {
   const completion = async (conv, prompt) => {
     const result = await request(service, `/api/organizations/local/chat_conversations/${conv}/completion`, {

@@ -1062,6 +1062,13 @@ function generateSessionTitle(rawText, requestedModel, emptyFallback, callback) 
 function mockApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   const method = req.method;
+  // The web bridge copies this organization capability into native
+  // coworkBrowserToolsEnabled, which also selects Code's session Browser.
+  // An empty fallback silently sends tools to legacy dev-server contexts,
+  // even while Code's separate launchEnabled toggle remains on.
+  if (method === "GET" && /^\/api\/organizations\/[^/]+\/cowork_settings$/.test(p)) {
+    return json(res, { browser_pane_enabled: true });
+  }
 
   // Code 的上下文来自 CLI model_selector，不读取网页的 hard_limit。
   const selector = p.match(/^\/api\/(?:organizations\/[^/]+\/)?model_selector\/([^/]+)$/);
