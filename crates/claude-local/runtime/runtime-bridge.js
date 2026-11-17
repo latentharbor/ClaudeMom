@@ -29,7 +29,7 @@
     if (!Array.isArray(code) || !Array.isArray(cowork)) throw Error('Unknown native session list');
     const active = [...new Set([...code, ...cowork].filter(busy).map(idOf).concat([...pending], extra))];
     if (active.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id))) throw Error('Unknown task identity');
-    const draft = [...document.querySelectorAll('textarea,[contenteditable="true"]')]
+    const draft = window.__claudeMomLocalProjectDraft===true || [...document.querySelectorAll('textarea,[contenteditable="true"]')]
       .some(e => (e.value || e.innerText || '').trim().length > 0);
     const response = await fetch(endpoint, { method: 'POST', cache: 'no-store',
       headers: { 'content-type': 'application/json', 'x-claudemom-runtime-token': token },

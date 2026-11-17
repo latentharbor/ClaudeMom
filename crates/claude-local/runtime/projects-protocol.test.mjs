@@ -1,0 +1,42 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import {once} from 'node:events';
+import {createLocalProjects} from './projects-local.mjs';
+import {ProjectEngine} from './third-party/ds-project/engine.js';
+import {externalFileId,sourcePins} from './projects-protocol.mjs';
+
+test('ClaudeLift upload IDs, source-file linking, pagination and memory preconditions use the DS core',async t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'projects-wire-'));
+  const backend=createLocalProjects({directory,accountId:'owned',models:()=>({model:'fixture/model'}),clientKey:'owned-key',scheduleInterval:0});
+  assert.ok(backend.core.engine instanceof ProjectEngine);
+  const server=http.createServer((req,res)=>backend.handle(req,res,new URL(req.url,'http://localhost')));
+  server.listen(0,'127.0.0.1');await once(server,'listening');const base=`http://127.0.0.1:${server.address().port}`;
+  const request=async(route,method='GET',value,form)=>{const r=await fetch(base+route,{method,headers:{authorization:'Bearer owned-key',...form?{}:{'content-type':'application/json'}},
+    ...(form?{body:form}:value===undefined?{}:{body:JSON.stringify(value)})});return{status:r.status,body:await r.json()};};
+  t.after(async()=>{backend.close();server.closeAllConnections();await new Promise(r=>server.close(r));fs.rmSync(directory,{recursive:true,force:true});});
+  assert.equal(externalFileId('00000000-0000-0000-0000-000000000001'),'file_01'+'1'.repeat(21)+'2');
+  const channel=(await request('/v1/code/channels','POST',{name:'Native wire project'})).body.channel;
+  const route='/v1/code/channels/'+channel.id;
+  const form=new FormData();form.set('file',new File([Buffer.from([0,1,2,250,251,252])],'owned.bin',{type:'application/octet-stream'}));
+  const upload=await request('/api/owned-org/upload?store_as_is=true','POST',undefined,form);assert.equal(upload.status,200);
+  const fileID=externalFileId(upload.body.file_uuid);assert.equal(upload.body.file_id,fileID);
+  const invalid=await request(route+'/files:write','POST',{files:[{path:'must-not-write.bin',source_file_id:fileID},{path:'missing.bin',source_file_id:'file_01missing'}]});
+  assert.equal(invalid.status,400);assert.equal((await request(route+'/files:list','POST',{recursive:true,limit:500})).body.entries.some(e=>e.path==='must-not-write.bin'),false);
+  const write=await request(route+'/files:write','POST',{files:[{path:'docs/owned.bin',source_file_id:fileID}]});
+  assert.equal(write.status,200);assert.equal(write.body.results[0].entry.file_id,fileID);
+  assert.deepEqual(Buffer.from((await request(route+'/files:open','POST',{path:'docs/owned.bin'})).body.data,'base64'),Buffer.from([0,1,2,250,251,252]));
+  assert.deepEqual(Buffer.from((await request(route+'/attachments/'+fileID+'/content')).body.data,'base64'),Buffer.from([0,1,2,250,251,252]));
+  assert.equal((await request(route+'/files:list','POST',{limit:501})).status,400);
+  const first=(await request(route+'/files:list','POST',{recursive:true,limit:1})).body;
+  assert.ok(first.cursor);const next=(await request(route+'/files:list','POST',{recursive:true,limit:1,cursor:first.cursor})).body;
+  assert.notEqual(first.entries[0].path,next.entries[0].path);
+  const memories='/v1/code/memory/channel/'+channel.id+'/memories';
+  const memory=(await request(memories,'POST',{path:'/decision.md',content:'Owned decision',precondition:{type:'not_exists'}})).body;
+  assert.equal((await request(memories+'/'+memory.id,'DELETE',{expected_content_sha256:'stale'})).status,409);
+  assert.equal((await request(memories+'/'+memory.id,'DELETE',{expected_content_sha256:memory.content_sha256})).status,200);
+  const diagnostics=(await request('/__codex_plus/projects-lab/diagnostics')).body;assert.equal(diagnostics.sourcePins.dsProject,sourcePins.dsProject);
+});

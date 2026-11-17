@@ -34,6 +34,8 @@ import { selectUiResources } from "./ui-resources.mjs";
 import { createSitePolicyHandler, isSitePolicyUrl } from "./site-policy.mjs";
 import { createHotRuntime, requestSession, constantToken, validateTaskReport } from './hot-runtime.mjs';
 import { localCloudAccess, extensionInstallPolicy, isFakeIp } from './local-policy.mjs';
+import { createLocalProjects } from './projects-local.mjs';
+import { createProjectRunner } from './projects-runner.mjs';
 import dns from 'node:dns';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +49,8 @@ let taskObservedAt = 0;
 let quiescing = false;
 let pendingCoreRevision = null;
 let uiAppliedRevision = null;
+let localProjects = null, localProjectTasks = 0;
+const projectsLab = process.env.CLAUDE_LOCAL_PROJECTS_LAB === '1';
 let networkWarning = null;
 if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') dns.lookup('example.com', { all: true }, (error, addresses) => {
   if (!error && addresses.some(entry => isFakeIp(entry.address))) {
@@ -112,6 +116,8 @@ function addLocalizationShim(html, officialLocales) {
 
 function addDesktopShims(html, locales) {
   html = addLocalizationShim(html, locales);
+  if(projectsLab&&!html.includes('src="/__codex_plus/projects-lab/ui.js"'))html=html.replace(/<head\b[^>]*>/i,
+    head=>head+'<script src="/__codex_plus/projects-lab/ui.js"></script>');
   if (runtimeBridge && !html.includes('src="/__codex_plus/runtime-bridge.js"')) {
     const revision = /^[a-f0-9]{64}$/.test(process.env.CLAUDE_LOCAL_UI_REVISION || '') ? process.env.CLAUDE_LOCAL_UI_REVISION : '';
     html = html.replace(/<head\b[^>]*>/i, head => `${head}<meta name="claudemom-ui-revision" content="${revision}"><script src="/__codex_plus/runtime-bridge.js"></script>`);
@@ -488,7 +494,8 @@ function jsonWithActiveOrg(res, obj, code = 200) {
 function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
-    configHash: hot.revision, activeInference, activeDictation: activeDictationWsConnections, uiAppliedRevision,
+    configHash: hot.revision, activeInference:activeInference+localProjectTasks, activeDictation: activeDictationWsConnections, uiAppliedRevision,
+    ...(projectsLab?{projectsBackend:'local-lab',projectTasks:localProjectTasks}:{}),
     lastClientAt, ...(persistenceWarning || networkWarning || desktopUi.warning ? { warning: persistenceWarning || networkWarning || desktopUi.warning } : {}),
     ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source,
       webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template",
@@ -557,6 +564,24 @@ const conversationService = createConversationService({
   log,
   onChange: (flush) => flush ? stateStore.flush() : stateStore.changed(),
 });
+if(projectsLab) {
+  const directory=path.join(APP_STATE_DIR,'projects-lab'),profileHome=path.join(APP_STATE_DIR,'profile-home');
+  const cache=path.join(profileHome,'Library/Application Support/Claude/claude-code');
+  let binary;
+  try{for(const version of fs.readdirSync(cache).sort().reverse()) {
+    if(!/^\d+\.\d+\.\d+$/.test(version))continue;
+    for(const hash of fs.readdirSync(path.join(cache,version))) {
+      if(!/^[a-f0-9]+$/.test(hash))continue;
+      const candidate=path.join(cache,version,hash,'claude.app/Contents/MacOS/claude');
+      if(fs.existsSync(candidate)){binary=candidate;break;}
+    }
+    if(binary)break;
+  }}catch{}
+  const runner=binary?createProjectRunner({directory:path.join(directory,'execution'),binary,clientKey,profileHome,
+    baseUrl:()=>`http://127.0.0.1:${process.env.CLAUDE_LOCAL_PUBLIC_PROXY_PORT||listeningPort}`}):undefined;
+  localProjects=createLocalProjects({directory,accountId:ACCOUNT.uuid,models:()=>hot.current,clientKey,runner,
+    onActiveChange:count=>{localProjectTasks=count;writeReady();},onTaskFinished:session=>hot.confirmIdle([session])});
+}
 
 function pushMessage(conv, msg) {
   const index = conv.chat_messages.length;
@@ -918,6 +943,12 @@ function resolvedBootstrap() {
     ...localBootstrap(), ...structuredClone(template),
     intercom_account_hash: null, intercom_user_jwt: null,
   });
+  if(projectsLab) {
+    const localFeatures=new Set(['claude_code_web','claude_code_quick_web_setup','project_knowledge_search']);
+    result.current_user_access.features=result.current_user_access.features.map(feature=>localFeatures.has(feature.feature)
+      ?{...feature,status:'available'}:feature);
+    result.local_projects_backend={kind:'local-lab',official_cloud:false};
+  }
   result.served_copy = {
     ...result.served_copy,
     "web.plan_name.max_20x": runtime.localization ? "Codex++ 本地网关" : "Codex++ local gateway",
@@ -935,6 +966,25 @@ function resolvedBootstrap() {
   if (managedResources) {
     result.gated_imports_build_id = uiResources.buildId;
     result.gated_imports = structuredClone(uiResources.gatedImports);
+  }
+  if (projectsLab && result.org_growthbook?.hashing_algorithm === 'djb2') {
+    // The shipped web reader calls this format djb2 but resolves names with
+    // unsigned Java string hashes (D3 in c1052f6878). Scope these capabilities
+    // to our isolated backend; native cloud admission remains disabled.
+    for (const name of ['amber_tributary_heron','amber_tributary_osprey','epitaxy_projects_channel_backend']) {
+      let hash=0;for(const character of name)hash=(Math.imul(hash,31)+character.charCodeAt(0))|0;
+      result.org_growthbook.features[String(hash>>>0)]={defaultValue:true};
+    }
+    // The create dialog deliberately stays disabled without its privacy copy.
+    // Supply descriptions of OUR backend, not fabricated official cloud or
+    // collaboration grants. This is API catalog data, not a forced DOM click.
+    const chinese=String(result.gated_messages?.locale||result.locale||'').startsWith('zh');
+    const messages={...(result.gated_messages?.messages||{}),
+      'secret:tv3jag':chinese?'项目资料和会话保存在本机，由本地执行器处理。':'Project data and conversations stay on this device and use a local executor.',
+      ...Object.fromEntries(['r0e84','1m27w9y'].map(id=>['secret:'+id,chinese?
+        '此本地后端暂不支持共享项目。':'Shared projects are not supported by this local backend.']))};
+    result.gated_messages={...result.gated_messages,messages,partial:false,
+      gates:[...new Set([...(result.gated_messages?.gates||[]),'amber_tributary_heron','amber_tributary_osprey'])]};
   }
   // Remove the experimental home only after choosing the final manifest.
   if (!runtime.hubHome) useClassicHome(result, template);
@@ -1110,6 +1160,13 @@ function generateSessionTitle(rawText, requestedModel, emptyFallback, callback) 
 function mockApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   const method = req.method;
+  if(localProjects?.matches(url)) {
+    localProjects.handle(req,res,url).catch(()=>{
+      if(!res.headersSent)json(res,{error:{type:'invalid_request_error',message:'Invalid local project request'}},400);
+      else res.destroy();
+    });
+    return;
+  }
   if (method === 'POST' && /^\/api\/organizations\/[^/]+\/dxt\/can_install$/.test(p)) {
     return readBody(req, raw => {
       try {
@@ -2132,6 +2189,13 @@ function handleSnapshot(req, res, hostHeader) {
 
   const hostName = url.hostname.toLowerCase();
   const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
+  if(projectsLab&&isMainClaudeHost&&url.pathname==='/__codex_plus/projects-lab/ui.js') {
+    res.writeHead(200,{'content-type':'application/javascript; charset=utf-8','cache-control':'no-store'});
+    return res.end(fs.readFileSync(path.join(here,'projects-ui.js')));
+  }
+  // Projects uses /v1, outside the older /api mock dispatcher. Never let an
+  // owned local project request fall through to Anthropic's cloud backend.
+  if(localProjects?.matches(url)&&(isMainClaudeHost||hostName==='api.anthropic.com'))return mockApi(req,res,url);
   if (runtime.managed && isMainClaudeHost && url.pathname === '/__codex_plus/runtime-state') {
     if (req.method === 'GET') return json(res, { schema: 1, token: bridgeToken,
       revision: process.env.CLAUDE_LOCAL_UI_REVISION || '', quiescing, protocol: 1,
@@ -2778,6 +2842,8 @@ inner.on("upgrade", handleDictationUpgrade);
 // 剥掉桌面端多发、上游网关不认的字段后转给本地 magpie。
 const outer = http.createServer((req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+  if(localProjects&&/^\/__codex_plus\/projects-lab\/jobs\/[a-f0-9-]{36}\/tools(?:\/perm_[A-Za-z0-9_-]+)?$/.test(u.pathname))
+    return void localProjects.handle(req,res,u).catch(()=>json(res,{error:{message:'Invalid local task request'}},400));
   if (runtime.managed && req.headers.origin !== undefined) return json(res, { error: "Browser origins are not allowed" }, 403);
   if (req.method === "GET" && u.pathname === "/__codex_claude_local/health") return json(res, health());
   if (runtime.managed) {
@@ -2791,6 +2857,7 @@ const outer = http.createServer((req, res) => {
     }
   }
   noteClient();
+  if(localProjects?.matches(u))return void localProjects.handle(req,res,u).catch(()=>json(res,{error:{message:'Invalid local project request'}},400));
   const fwd = (body) => forwardGateway(req, res, u.pathname + u.search, body);
   if (req.method === "GET" && u.pathname === "/v1/models") return json(res, modelList(runtime));
   if (req.method === "POST" && u.pathname === "/v1/messages") {
@@ -2927,6 +2994,7 @@ let stopping = false;
 function shutdown() {
   if (stopping) return;
   stopping = true;
+  localProjects?.close();
   clearTimeout(readyWriteTimer);
   stateStore.flush();
   outer.close(() => process.exit(0));

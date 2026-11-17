@@ -1,0 +1,85 @@
+name: Local Projects lab
+on:
+  push:
+    branches: [projects-local-lab-20261117]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: projects-lab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  local-projects:
+    if: github.repository == 'latentharbor/claudemom-ui-lab'
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      CLAUDE_MOM_LAB_BUILD: '1'
+      VITE_CLAUDE_MOM_LAB_BUILD: '1'
+      CLAUDE_MOM_PROJECTS_LAB: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/claude-mom/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Project persistence and authorization
+        run: |
+          node --check scripts/verify-ui-lab.mjs
+          node --check scripts/verify-projects-lab.mjs
+          node --check crates/claude-local/runtime/projects-ui.js
+          node --check crates/claude-local/runtime/projects-mcp.mjs
+          node --check crates/claude-local/runtime/projects-ds-api.mjs
+          node --check crates/claude-local/runtime/projects-ds-core.mjs
+          node --test crates/claude-local/runtime/projects-local.test.mjs crates/claude-local/runtime/projects-engine.test.mjs crates/claude-local/runtime/projects-protocol.test.mjs crates/claude-local/runtime/projects-migration.test.mjs
+      - name: Build isolated manager
+        working-directory: apps/claude-mom
+        run: |
+          npm ci
+          npm run tauri -- build --bundles app --config src-tauri/tauri.lab.conf.json
+      - name: Prepare owned fixture
+        id: prepare
+        run: |
+          test "$(uname -m)" = arm64
+          mkdir -p fixture projects-evidence
+          gh release download lab-fixtures-5.11492.5 -R "$GITHUB_REPOSITORY" --dir fixture
+          (cd fixture && shasum -a 256 -c SHA256SUMS)
+          ditto -x -k fixture/Claude-5.11492.5.zip fixture
+          ditto -x -k fixture/cli-cache-2.1.325.zip fixture
+          mkdir -p fixture/overlay
+          gh release download reload-fixtures-5.11492.5-20261117 -R "$GITHUB_REPOSITORY" --dir fixture/overlay
+          (cd fixture/overlay && shasum -a 256 -c SHA256SUMS)
+          cp fixture/overlay/desktop-features.json fixture/desktop-features.json
+          ditto -x -k fixture/overlay/web-cache.zip fixture
+          cd crates/claude-local/runtime
+          bash scripts/gen-ca.sh
+          sudo security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain ca/ca.pem
+      - name: Independent local execution with owned bundled CLI
+        run: |
+          export PROJECTS_TEST_CLI="$PWD/$(find fixture/cli-cache -path '*/claude.app/Contents/MacOS/claude' -type f -print -quit)"
+          test -x "$PROJECTS_TEST_CLI"
+          export PROJECTS_TEST_EVIDENCE="$PWD/projects-evidence/runner"
+          node --test crates/claude-local/runtime/projects-integration.test.mjs
+      - name: Native Projects UI and local API
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: |
+          node scripts/verify-ui-lab.mjs \
+            "$PWD/target/release/bundle/macos/ClaudeMom UI Lab.app" \
+            "$PWD/fixture/Claude.app" \
+            "$PWD/fixture/desktop-features.json" \
+            "$PWD/crates/claude-local/runtime/ca" \
+            "$PWD/fixture/cli-cache" \
+            "$PWD/projects-evidence" \
+            "$PWD/fixture/web-cache" --probe-projects
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Local-Projects-evidence
+          path: projects-evidence/
+          if-no-files-found: warn

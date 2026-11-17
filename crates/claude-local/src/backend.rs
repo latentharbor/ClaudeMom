@@ -58,6 +58,30 @@ pub struct TemplateVersion {
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("projects-ds-api.mjs", include_bytes!("../runtime/projects-ds-api.mjs")),
+    ("projects-ds-core.mjs", include_bytes!("../runtime/projects-ds-core.mjs")),
+    ("projects-protocol.mjs", include_bytes!("../runtime/projects-protocol.mjs")),
+    ("projects-worktree.mjs", include_bytes!("../runtime/projects-worktree.mjs")),
+    ("third-party/ds-project/engine.js", include_bytes!("../runtime/third-party/ds-project/engine.js")),
+    ("third-party/ds-project/store.js", include_bytes!("../runtime/third-party/ds-project/store.js")),
+    ("third-party/ds-project/workspace.js", include_bytes!("../runtime/third-party/ds-project/workspace.js")),
+    ("third-party/ds-project/appearance.js", include_bytes!("../runtime/third-party/ds-project/appearance.js")),
+    ("third-party/ds-project/library.js", include_bytes!("../runtime/third-party/ds-project/library.js")),
+    ("third-party/ds-project/settings.js", include_bytes!("../runtime/third-party/ds-project/settings.js")),
+    ("third-party/ds-project/context.js", include_bytes!("../runtime/third-party/ds-project/context.js")),
+    ("third-party/ds-project/coordinator.js", include_bytes!("../runtime/third-party/ds-project/coordinator.js")),
+    ("third-party/ds-project/package.json", include_bytes!("../runtime/third-party/ds-project/package.json")),
+    ("third-party/ds-project/LICENSE", include_bytes!("../runtime/third-party/ds-project/LICENSE")),
+    ("third-party/ds-project/UPSTREAM.md", include_bytes!("../runtime/third-party/ds-project/UPSTREAM.md")),
+    ("third-party/dsh-projects/LICENSE", include_bytes!("../runtime/third-party/dsh-projects/LICENSE")),
+    ("third-party/dsh-projects/NOTICE", include_bytes!("../runtime/third-party/dsh-projects/NOTICE")),
+    ("third-party/dsh-projects/UPSTREAM.md", include_bytes!("../runtime/third-party/dsh-projects/UPSTREAM.md")),
+    ("projects-schedule.mjs", include_bytes!("../runtime/projects-schedule.mjs")),
+    ("projects-mcp.mjs", include_bytes!("../runtime/projects-mcp.mjs")),
+    ("projects-ui.js", include_bytes!("../runtime/projects-ui.js")),
+    ("projects-runner.mjs", include_bytes!("../runtime/projects-runner.mjs")),
+    ("projects-job.mjs", include_bytes!("../runtime/projects-job.mjs")),
+    ("projects-local.mjs", include_bytes!("../runtime/projects-local.mjs")),
     ("service.mjs", include_bytes!("../runtime/service.mjs")),
     ("hot-runtime.mjs", include_bytes!("../runtime/hot-runtime.mjs")),
     ("local-policy.mjs", include_bytes!("../runtime/local-policy.mjs")),
@@ -1967,6 +1991,8 @@ fn start_backend(
         .arg(root.join("ca"))
         .current_dir(root)
         .env("CLAUDE_LOCAL_MANAGED", "1")
+        .env("CLAUDE_LOCAL_PROJECTS_LAB", flag(host().isolated_desktop_app().is_some()
+            && std::env::var("CLAUDE_MOM_PROJECTS_LAB").is_ok_and(|v| v=="1")))
         // 代理脚本按这个目录找听写凭据（变量名沿用 Codex++ 的，脚本两边共用）。
         .env("CODEX_PLUS_STATE_DIR", host().state_dir())
         .env("CLAUDE_LOCAL_CACHE_DIR", root.join(".cache"))

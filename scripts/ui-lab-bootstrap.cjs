@@ -76,6 +76,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/evaluate") {
       return res.end(JSON.stringify({ result: await entry.frame.executeJavaScript(payload.expression, true) }));
     }
+    if (req.method === "POST" && req.url === "/insert-text") {
+      if(typeof payload.text!=='string'||payload.text.length>1000)throw Error('Invalid owned text fixture');
+      await entry.wc.insertText(payload.text);
+      return res.end(JSON.stringify({inserted:true}));
+    }
     if (req.method === "POST" && req.url === "/reload-frontend") {
       if (!entry.frame.url.startsWith("https://claude.ai/epitaxy")) throw Error("Not the isolated main frontend");
       res.end(JSON.stringify({ reloading: true, contentsId: entry.wc.id }));

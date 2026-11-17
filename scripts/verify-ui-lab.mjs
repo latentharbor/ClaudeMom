@@ -7,9 +7,11 @@ import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { verifyProjectsLab } from './verify-projects-lab.mjs';
 
 const [manager, officialApp, reference, ca, cliCache, output, webCache] = process.argv.slice(2);
 const serviceProbe = process.argv.includes('--probe-service');
+const projectsProbe = process.argv.includes('--probe-projects');
 const reloadProbe = process.argv.includes("--probe-reload") || serviceProbe;
 const held = [];
 function finishHeld() {
@@ -34,14 +36,19 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url.startsWith("/v1/messages")) {
     const body = JSON.parse(raw);
     requests.push({ model: body.model, thinking: body.thinking, effort: body.output_config?.effort, endpointPort: req.socket.localPort });
+    const lastUser=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:
+      m.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')).filter(Boolean).at(-1)||'';
+    const currentRequest=lastUser.split('Current request:\n').at(-1).split('\n\nProject Library snapshot:')[0].trim();
+    const permissionTool=projectsProbe&&currentRequest==='UI_PROJECT_TOOL'&&!body.messages.some(m=>Array.isArray(m.content)&&m.content.some(c=>c.type==='tool_result'));
+    const block=permissionTool?{type:'tool_use',id:'toolu_ui_project',name:'Bash',input:{command:"printf 'UI_PROJECT_APPROVED' > ui-project-approved.txt",description:'Write an owned UI lab fixture'}}:{type:'text',text:'UI_LAB_ROUTING_OK'};
     const message = { id: "msg_ui_lab", type: "message", role: "assistant", model: body.model,
       content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } };
     const events = [
       { type: "message_start", message },
-      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "UI_LAB_ROUTING_OK" } },
+      { type: "content_block_start", index: 0, content_block: permissionTool?{...block,input:{}}:{type:'text',text:''} },
+      { type: "content_block_delta", index: 0, delta: permissionTool?{type:'input_json_delta',partial_json:JSON.stringify(block.input)}:{type:'text_delta',text:block.text} },
       { type: "content_block_stop", index: 0 },
-      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } },
+      { type: "message_delta", delta: { stop_reason: permissionTool?'tool_use':'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } },
       { type: "message_stop" },
     ];
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -150,6 +157,9 @@ try {
   const status = await rpc("/status");
   assert.ok(status.data.startsWith(root + path.sep));
   result.checks.isolatedUserData = true;
+  if(projectsProbe) {
+    await verifyProjectsLab({frames,evaluate,clickText,until,result,root,output,rpc});
+  } else {
   await until(async () => {
     for (const frame of await frames()) {
       try { if (await evaluate(frame, "document.body?.innerText?.includes('Code') || !!document.querySelector('[aria-label=\"Code\"]') || [...document.querySelectorAll('button,a')].some(e => /code/i.test(e.getAttribute('aria-label') || e.getAttribute('title') || ''))")) return true; } catch {}
@@ -410,6 +420,7 @@ try {
   for (const file of fs.readdirSync(root).filter((file) => /^frame-\d+\.png$/.test(file))) {
     fs.copyFileSync(path.join(root, file), path.join(output, file));
   }
+  }
 } catch (error) {
   result.errors.push(error.stack || String(error));
   process.exitCode = 1;
@@ -424,6 +435,12 @@ try {
       result.frameDiagnostics = [];
       for (const frame of current) {
         try {
+          if(projectsProbe&&frame.url.startsWith('https://claude.ai/')) {
+            try{
+              const diagnostics=await evaluate(frame,"fetch('/__codex_plus/projects-lab/diagnostics',{signal:AbortSignal.timeout(2000)}).then(r=>r.json())");
+              fs.writeFileSync(path.join(output,'projects-api-diagnostics.json'),JSON.stringify(diagnostics,null,2));
+            }catch{}
+          }
           result.frameDiagnostics.push({ url: frame.url, ui: await evaluate(frame,
             "({runtimeBridge:window.__claudeMomRuntimeBridgeStatus,runtimeBridgeError:window.__claudeMomRuntimeBridgeError,text:document.body?.innerText?.slice(0,12000), controls:[...document.querySelectorAll('button,a,[role=tab]')].slice(0,80).map(e=>({text:e.textContent?.trim().slice(0,100),label:e.getAttribute('aria-label'),title:e.getAttribute('title')}))})") });
           await rpc("/screenshot", { id: frame.id, name: `final-${frame.contentsId}.png` });
