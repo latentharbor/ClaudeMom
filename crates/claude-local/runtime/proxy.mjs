@@ -948,6 +948,15 @@ function resolvedBootstrap() {
     result.gated_imports_build_id = uiResources.buildId;
     result.gated_imports = structuredClone(uiResources.gatedImports);
   }
+  if (projectsLab && result.org_growthbook?.hashing_algorithm === 'djb2') {
+    // The shipped web reader calls this format djb2 but resolves names with
+    // unsigned Java string hashes (D3 in c1052f6878). Scope these capabilities
+    // to our isolated backend; native cloud admission remains disabled.
+    for (const name of ['amber_tributary_heron','amber_tributary_osprey','epitaxy_projects_channel_backend']) {
+      let hash=0;for(const character of name)hash=(Math.imul(hash,31)+character.charCodeAt(0))|0;
+      result.org_growthbook.features[String(hash>>>0)]={defaultValue:true};
+    }
+  }
   // Remove the experimental home only after choosing the final manifest.
   if (!runtime.hubHome) useClassicHome(result, template);
   resolvedBootstrapCache = result;

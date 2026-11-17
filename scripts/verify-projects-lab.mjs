@@ -15,9 +15,9 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   await until(()=>clickText('Code'));
   await delay(2500);
   const frame=await until(frontend);
-  const before=await evaluate(frame,'location.pathname');
-  const prefix=before.startsWith('/epitaxy')?'/epitaxy':'/code';
-  await evaluate(frame,`(()=>{history.pushState({},'',${JSON.stringify(prefix+'/projects/browse')});dispatchEvent(new PopStateEvent('popstate'));return true;})()`);
+  // c1052f6878 retains native /epitaxy sessions, but registers the new browse
+  // route under /code only. Do not infer project routes from session routes.
+  await evaluate(frame,"(()=>{history.pushState({},'','/code/projects/browse');dispatchEvent(new PopStateEvent('popstate'));return true;})()");
   await delay(7000);
   async function inspect() {
     const frame=await frontend();if(!frame)return null;
