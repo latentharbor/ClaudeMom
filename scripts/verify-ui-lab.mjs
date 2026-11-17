@@ -101,6 +101,19 @@ async function until(predicate, ms = 60000) {
   }
   throw last || Error("Isolated UI wait timed out");
 }
+// Navigation can replace the renderer between observations. Resolve the owned
+// frontend for each read instead of retaining a pre-navigation frame ID.
+async function evaluateFrontend(expression) {
+  return until(async () => {
+    const frame = (await frames()).find(frame => frame.url.startsWith('https://claude.ai/epitaxy'));
+    if (!frame) return false;
+    const observed = await evaluate(frame, `(async()=>{
+      if(document.readyState!=='complete'||!window['claude.web']?.LocalSessions)return null;
+      return {value:await (${expression})};
+    })()`);
+    return observed ? { frame, value: observed.value } : false;
+  });
+}
 async function clickText(text) {
   for (const frame of await frames()) {
     try {
@@ -265,15 +278,13 @@ try {
     const requestCount = held.filter(entry => entry.kind === 'code').length;
     result.reload = { code: { runningBefore: true, setupComplete: true, tabsBefore: beforeTabs?.tabs?.length } };
     await rpc("/reload-frontend", { id: codeFrame.id });
-    const afterFrame = await until(async () => {
-      const current=(await frames()).find(frame=>frame.url.startsWith('https://claude.ai/epitaxy'));
-      if(!current)return false;
-      return await evaluate(current,"document.readyState==='complete' && !!window['claude.web']?.LocalSessions") ? current : false;
-    }, 60000);
     await delay(5000);
-    const afterSession = await evaluate(afterFrame, `window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)})`);
-    const afterTabs = preview === previewId ? await evaluate(afterFrame, `window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`) : null;
-    const draftPreserved = await evaluate(afterFrame, ` [...document.querySelectorAll('textarea,[contenteditable="true"]')].some(e=>(e.value||e.innerText||'').includes(${JSON.stringify(draft)}))`);
+    const after = (await evaluateFrontend(`(async()=>({
+      session:await window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)}),
+      tabs:${preview === previewId ? `await window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})` : 'null'},
+      draftPreserved:[...document.querySelectorAll('textarea,[contenteditable="true"]')].some(e=>(e.value||e.innerText||'').includes(${JSON.stringify(draft)}))
+    }))()`)).value;
+    const afterSession = after.session, afterTabs = after.tabs, draftPreserved = after.draftPreserved;
     const ids = value => (value?.tabs || []).map(tab => tab.tabId).sort();
     result.reload = { desktopPidUnchanged: (await rpc('/status')).pid===control.pid,
       code: { runningBefore: true, runningAfter: afterSession?.isRunning===true,
@@ -281,17 +292,19 @@ try {
         tabsBefore: ids(beforeTabs), tabsAfter: ids(afterTabs), draftPreserved } };
     result.reload.code.tabsPreserved = beforeTabs === null ? null : JSON.stringify(ids(beforeTabs))===JSON.stringify(ids(afterTabs));
     finishHeld();
-    await delay(3000);
+    await until(async () => !(await evaluateFrontend(`window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)})`)).value?.isRunning);
+    result.reload.code.finishedAfterRelease = true;
     // A renderer-owned completion uses the same request lifetime as Chat,
     // without sending anything to a real provider or altering live chats.
     const conv=crypto.randomUUID();
-    await evaluate(afterFrame, `(async()=>{
+    await evaluateFrontend(`(async()=>{
       await fetch('/api/organizations/local/chat_conversations',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({uuid:${JSON.stringify(conv)}})});
       window.__chatReloadProbe=fetch('/api/organizations/local/chat_conversations/${conv}/completion',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:'UI_LAB_CHAT_RELOAD',turn_message_uuids:{human_message_uuid:crypto.randomUUID(),assistant_message_uuid:crypto.randomUUID()}})}).then(async r=>{const reader=r.body.getReader();while(!(await reader.read()).done){} }).catch(()=>{});
       return true;
     })()`);
     const chatEntry = await until(() => held.find(entry=>entry.kind==='chat'));
-    await rpc('/reload-frontend', {id:afterFrame.id});
+    const chatFrame = (await evaluateFrontend('true')).frame;
+    await rpc('/reload-frontend', {id:chatFrame.id});
     await delay(5000);
     result.reload.rendererOwnedChat = { upstreamAborted: chatEntry.aborted,
       scope: 'renderer-owned REST completion, not a Cowork VM execution' };
