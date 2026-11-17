@@ -15,8 +15,8 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   await until(()=>clickText('Code'));
   await delay(2500);
   const frame=await until(frontend);
-  // c1052f6878 retains native /epitaxy sessions, but registers the new browse
-  // route under /code only. Do not infer project routes from session routes.
+  // Navigate via the web router's /code entry. Desktop may translate it back
+  // to /epitaxy; both the route and its Projects capabilities must be present.
   await evaluate(frame,"(()=>{history.pushState({},'','/code/projects/browse');dispatchEvent(new PopStateEvent('popstate'));return true;})()");
   await delay(7000);
   async function inspect() {
@@ -36,7 +36,7 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   const filled=await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('input')].find(e=>e.type!=='hidden'&&e.getBoundingClientRect().width>20);if(!e)return false;e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'LOCAL_PROJECTS_CI');e.dispatchEvent(new Event('input',{bubbles:true}));return true;})()");
   assert.equal(filled,true,'Project name field');
   await delay(500);
-  assert.equal(await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('button')].find(e=>!e.disabled&&/^(Create|Create project|创建|创建项目)$/i.test(e.textContent.replace(/[\\uE000-\\uF8FF]/g,'').trim()));if(!e)return false;e.click();return true;})()"),true);
+  assert.equal(await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('button')].find(e=>!e.disabled&&/^(Create|Create project|New project|创建|创建项目|新建项目)$/i.test(e.textContent.replace(/[\\uE000-\\uF8FF]/g,'').trim()));if(!e)return false;e.click();return true;})()"),true);
   const file=path.join(root,'projects-lab/projects.json');
   const saved=await until(()=>{try{const s=JSON.parse(fs.readFileSync(file));return s.channels.some(c=>c.name==='LOCAL_PROJECTS_CI')?s:null;}catch{return null;}});
   assert.equal(saved.channels.length,1);

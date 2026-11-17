@@ -34,17 +34,18 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     };
     timer=setInterval(check,300);timer.unref();active.set(jobDir,timer);count();check();
   }
-  function run({projectId,prompt,model,sessionId=crypto.randomUUID(),resume=false}) {
+  function run({projectId,prompt,model,effort='low',sessionId=crypto.randomUUID(),resume=false}) {
     if(closed)throw Error('Project runner closed');
     if(!/^chan_[A-Za-z0-9_-]{1,120}$/.test(projectId)||typeof prompt!=='string'||prompt.length>200000)throw Error('Invalid local project job');
     if(typeof model!=='string'||!model||model.startsWith('-')||model.length>500)throw Error('Invalid project model');
+    if(!['low','medium','high','max'].includes(effort))throw Error('Invalid local project effort');
     if(!/^[0-9a-f-]{36}$/i.test(sessionId))throw Error('Invalid project session');
     if(active.size>=4)throw Error('Local project concurrency limit reached');
     const id=crypto.randomUUID(),project=path.join(directory,projectId),jobDir=path.join(project,'jobs',id);
     const cwd=path.join(project,'workspace'),configDir=path.join(project,'cli'),tmp=path.join(jobDir,'tmp');
     for(const dir of [jobDir,cwd,configDir,tmp])fs.mkdirSync(dir,{recursive:true,mode:0o700});
     privateJSON(path.join(jobDir,'mcp.json'),{mcpServers:{}});
-    const args=['--print','--verbose','--output-format','json','--model',model,
+    const args=['--print','--verbose','--output-format','json','--model',model,'--effort',effort,
       ...(resume?['--resume',sessionId]:['--session-id',sessionId]),
       '--setting-sources','','--strict-mcp-config','--mcp-config',path.join(jobDir,'mcp.json'),
       '--tools','Bash,Read,Write,Edit,Glob,Grep,Agent',

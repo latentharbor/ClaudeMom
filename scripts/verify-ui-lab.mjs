@@ -430,6 +430,10 @@ try {
       result.frameDiagnostics = [];
       for (const frame of current) {
         try {
+          if(projectsProbe&&frame.url.startsWith('https://claude.ai/')) {
+            const diagnostics=await evaluate(frame,"fetch('/__codex_plus/projects-lab/diagnostics').then(r=>r.json())");
+            fs.writeFileSync(path.join(output,'projects-api-diagnostics.json'),JSON.stringify(diagnostics,null,2));
+          }
           result.frameDiagnostics.push({ url: frame.url, ui: await evaluate(frame,
             "({runtimeBridge:window.__claudeMomRuntimeBridgeStatus,runtimeBridgeError:window.__claudeMomRuntimeBridgeError,text:document.body?.innerText?.slice(0,12000), controls:[...document.querySelectorAll('button,a,[role=tab]')].slice(0,80).map(e=>({text:e.textContent?.trim().slice(0,100),label:e.getAttribute('aria-label'),title:e.getAttribute('title')}))})") });
           await rpc("/screenshot", { id: frame.id, name: `final-${frame.contentsId}.png` });
