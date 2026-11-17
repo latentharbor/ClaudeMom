@@ -34,6 +34,7 @@ import { selectUiResources } from "./ui-resources.mjs";
 import { createSitePolicyHandler, isSitePolicyUrl } from "./site-policy.mjs";
 import { createHotRuntime, requestSession, constantToken, validateTaskReport } from './hot-runtime.mjs';
 import { localCloudAccess, extensionInstallPolicy, isFakeIp } from './local-policy.mjs';
+import { createLocalProjects } from './projects-local.mjs';
 import dns from 'node:dns';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,8 @@ let taskObservedAt = 0;
 let quiescing = false;
 let pendingCoreRevision = null;
 let uiAppliedRevision = null;
+let localProjects = null, localProjectTasks = 0;
+const projectsLab = process.env.CLAUDE_LOCAL_PROJECTS_LAB === '1';
 let networkWarning = null;
 if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') dns.lookup('example.com', { all: true }, (error, addresses) => {
   if (!error && addresses.some(entry => isFakeIp(entry.address))) {
@@ -488,7 +491,8 @@ function jsonWithActiveOrg(res, obj, code = 200) {
 function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
-    configHash: hot.revision, activeInference, activeDictation: activeDictationWsConnections, uiAppliedRevision,
+    configHash: hot.revision, activeInference:activeInference+localProjectTasks, activeDictation: activeDictationWsConnections, uiAppliedRevision,
+    ...(projectsLab?{projectsBackend:'local-lab',projectTasks:localProjectTasks}:{}),
     lastClientAt, ...(persistenceWarning || networkWarning || desktopUi.warning ? { warning: persistenceWarning || networkWarning || desktopUi.warning } : {}),
     ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source,
       webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template",
@@ -557,6 +561,8 @@ const conversationService = createConversationService({
   log,
   onChange: (flush) => flush ? stateStore.flush() : stateStore.changed(),
 });
+if(projectsLab) localProjects=createLocalProjects({directory:path.join(APP_STATE_DIR,'projects-lab'),accountId:ACCOUNT.uuid,
+  models:()=>hot.current,clientKey,onActiveChange:count=>{localProjectTasks=count;writeReady();}});
 
 function pushMessage(conv, msg) {
   const index = conv.chat_messages.length;
@@ -918,6 +924,12 @@ function resolvedBootstrap() {
     ...localBootstrap(), ...structuredClone(template),
     intercom_account_hash: null, intercom_user_jwt: null,
   });
+  if(projectsLab) {
+    const localFeatures=new Set(['claude_code_web','claude_code_quick_web_setup','project_knowledge_search']);
+    result.current_user_access.features=result.current_user_access.features.map(feature=>localFeatures.has(feature.feature)
+      ?{...feature,status:'available'}:feature);
+    result.local_projects_backend={kind:'local-lab',official_cloud:false};
+  }
   result.served_copy = {
     ...result.served_copy,
     "web.plan_name.max_20x": runtime.localization ? "Codex++ 本地网关" : "Codex++ local gateway",
@@ -1110,6 +1122,13 @@ function generateSessionTitle(rawText, requestedModel, emptyFallback, callback) 
 function mockApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   const method = req.method;
+  if(localProjects?.matches(url)) {
+    localProjects.handle(req,res,url).catch(()=>{
+      if(!res.headersSent)json(res,{error:{type:'invalid_request_error',message:'Invalid local project request'}},400);
+      else res.destroy();
+    });
+    return;
+  }
   if (method === 'POST' && /^\/api\/organizations\/[^/]+\/dxt\/can_install$/.test(p)) {
     return readBody(req, raw => {
       try {
@@ -2927,6 +2946,7 @@ let stopping = false;
 function shutdown() {
   if (stopping) return;
   stopping = true;
+  localProjects?.close();
   clearTimeout(readyWriteTimer);
   stateStore.flush();
   outer.close(() => process.exit(0));

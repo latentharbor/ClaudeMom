@@ -58,6 +58,7 @@ pub struct TemplateVersion {
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("projects-local.mjs", include_bytes!("../runtime/projects-local.mjs")),
     ("service.mjs", include_bytes!("../runtime/service.mjs")),
     ("hot-runtime.mjs", include_bytes!("../runtime/hot-runtime.mjs")),
     ("local-policy.mjs", include_bytes!("../runtime/local-policy.mjs")),
@@ -1967,6 +1968,8 @@ fn start_backend(
         .arg(root.join("ca"))
         .current_dir(root)
         .env("CLAUDE_LOCAL_MANAGED", "1")
+        .env("CLAUDE_LOCAL_PROJECTS_LAB", flag(host().isolated_desktop_app().is_some()
+            && std::env::var("CLAUDE_MOM_PROJECTS_LAB").is_ok_and(|v| v=="1")))
         // 代理脚本按这个目录找听写凭据（变量名沿用 Codex++ 的，脚本两边共用）。
         .env("CODEX_PLUS_STATE_DIR", host().state_dir())
         .env("CLAUDE_LOCAL_CACHE_DIR", root.join(".cache"))

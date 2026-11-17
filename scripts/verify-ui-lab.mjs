@@ -7,9 +7,11 @@ import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { verifyProjectsLab } from './verify-projects-lab.mjs';
 
 const [manager, officialApp, reference, ca, cliCache, output, webCache] = process.argv.slice(2);
 const serviceProbe = process.argv.includes('--probe-service');
+const projectsProbe = process.argv.includes('--probe-projects');
 const reloadProbe = process.argv.includes("--probe-reload") || serviceProbe;
 const held = [];
 function finishHeld() {
@@ -150,6 +152,9 @@ try {
   const status = await rpc("/status");
   assert.ok(status.data.startsWith(root + path.sep));
   result.checks.isolatedUserData = true;
+  if(projectsProbe) {
+    await verifyProjectsLab({frames,evaluate,clickText,until,result,root,output});
+  } else {
   await until(async () => {
     for (const frame of await frames()) {
       try { if (await evaluate(frame, "document.body?.innerText?.includes('Code') || !!document.querySelector('[aria-label=\"Code\"]') || [...document.querySelectorAll('button,a')].some(e => /code/i.test(e.getAttribute('aria-label') || e.getAttribute('title') || ''))")) return true; } catch {}
@@ -409,6 +414,7 @@ try {
   // UI check. Payload preservation is covered independently by runtime CI.
   for (const file of fs.readdirSync(root).filter((file) => /^frame-\d+\.png$/.test(file))) {
     fs.copyFileSync(path.join(root, file), path.join(output, file));
+  }
   }
 } catch (error) {
   result.errors.push(error.stack || String(error));
