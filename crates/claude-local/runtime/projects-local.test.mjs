@@ -21,7 +21,7 @@ test('local project state survives a service restart without access to official 
   try {
     const made=await request('/v1/code/channels','POST',{name:'Owned local project',system_prompt_addendum:'Owned fixture only'});
     assert.equal(made.status,201);const id=made.body.channel.id;
-    assert.match(id,/^chan_/);assert.equal(made.body.channel.execution_backend,'claudemom-local');
+    assert.match(id,/^chan_/);assert.equal(made.body.channel.execution_backend,'ds-project-local');
     const files=`/v1/code/channels/${id}`;
     const write=await request(files+'/files:write','POST',{files:[{path:'reference/notes.md',content:Buffer.from('Owned project knowledge').toString('base64'),overwrite:false}]});
     assert.equal(write.status,200);assert.ok(write.body.results[0].content_sha256);
@@ -35,7 +35,7 @@ test('local project state survives a service restart without access to official 
     backend.close();backend=createLocalProjects({directory,accountId:'fixture-account',models:()=>({model:'fixture/model'}),clientKey:'fixture-local-key'});
     assert.equal((await request('/v1/code/channels')).body.data[0].id,id);
     assert.equal((await request(`/v1/code/channels/${id}`)).body.channel.system_prompt_addendum,'Owned fixture only');
-    assert.equal((await request(files+'/files:list','POST',{path:'/',recursive:true})).body.entries[0].path,'reference/notes.md');
+    assert.ok((await request(files+'/files:list','POST',{path:'/',recursive:true})).body.entries.some(e=>e.path==='reference/notes.md'));
     assert.equal((await request(memoryBase+'/'+memory.body.id)).body.content,'New decision');
     await request(files+'/files:mkdir','POST',{path:'empty-folder'});
     assert.ok((await request(files+'/files:list','POST',{path:'/',recursive:true})).body.entries.some(e=>e.path==='empty-folder'&&e.is_directory));

@@ -26,7 +26,7 @@ function finish(values) {
   fs.writeFileSync(path.join(directory,'stderr.log'),errors,{mode:0o600});
   record({state:cancelled?'cancelled':values.code===0&&answer&&answer.is_error!==true?'completed':'failed',finishedAt:new Date().toISOString(),
     result:typeof answer?.result==='string'?answer.result.slice(0,100000):'',
-    usage:answer?.usage||{},...values,
+    usage:answer?.usage||{},modelUsage:answer?.modelUsage||{},...values,
     // Error text stays in the private job folder, never in a public health API.
     error:values.code===0?undefined:errors.slice(-4000)});
 }

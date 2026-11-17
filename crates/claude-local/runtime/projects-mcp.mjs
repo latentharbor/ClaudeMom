@@ -16,6 +16,18 @@ const tools=[
   {name:'write_memory',description:'Write shared memory with a version precondition. Read the previous hash before overwriting.',inputSchema:{type:'object',properties:{path:{type:'string'},content:{type:'string'},expected_sha256:{type:'string'}},required:['path','content']}},
   {name:'create_schedule',description:'Schedule a local worker task using a one-time ISO date or five-field cron with an IANA timezone. Tool permissions still require user approval.',inputSchema:{type:'object',properties:{name:{type:'string'},prompt:{type:'string'},cron_expression:{type:'string'},run_once_at:{type:'string'},timezone:{type:'string'}},required:['name','prompt']}},
   {name:'list_schedules',description:'List local project schedules.',inputSchema:{type:'object',properties:{}}},
+  {name:'project_launch_task',description:'DS Project: dispatch an independent worktree task and return without waiting.',inputSchema:{type:'object',properties:{title:{type:'string'},brief:{type:'string'},kind:{type:'string',enum:['research','execute']}},required:['title','brief']}},
+  {name:'project_list_threads',description:'DS Project: inspect thread status and latest results.',inputSchema:{type:'object',properties:{}}},
+  {name:'project_send_to_thread',description:'DS Project: continue an existing task.',inputSchema:{type:'object',properties:{thread_id:{type:'string'},body:{type:'string'}},required:['thread_id','body']}},
+  {name:'project_update_thread',description:'DS Project: stop, resolve or reopen a task.',inputSchema:{type:'object',properties:{thread_id:{type:'string'},action:{type:'string',enum:['stop','resolve','reopen']}},required:['thread_id','action']}},
+  {name:'project_read_context',description:'DS Project: read project memory, Library and paginated task history.',inputSchema:{type:'object',properties:{query:{type:'string'},file_id:{type:'string'},task_id:{type:'string'},before_message_id:{type:'string'},limit:{type:'integer'}}}},
+  {name:'project_read_activity',description:'DS Project: read bounded activity after a cursor.',inputSchema:{type:'object',properties:{after:{type:'integer'},limit:{type:'integer'}}}},
+  {name:'project_search_history',description:'DS Project: search preserved project history.',inputSchema:{type:'object',properties:{query:{type:'string'},thread_id:{type:'string'},limit:{type:'integer'}},required:['query']}},
+  {name:'project_remember',description:'DS Project: remember an established preference or decision in MEMORY.md.',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}},
+  {name:'project_forget',description:'DS Project: forget an obsolete project memory.',inputSchema:{type:'object',properties:{id:{type:'string'},expected_revision:{type:'integer'}},required:['id']}},
+  {name:'project_memory_file',description:'DS Project: list/read/write project memory files; read the SHA before editing.',inputSchema:{type:'object',properties:{action:{type:'string',enum:['list','read','write','delete']},name:{type:'string'},content:{type:'string'},expected_sha256:{type:'string'}}}},
+  {name:'project_finish_task',description:'DS Project: report a task result, whether it needs user input, and whether it is resolved.',inputSchema:{type:'object',properties:{summary:{type:'string'},needs_input:{type:'boolean'},resolved:{type:'boolean'}},required:['summary']}},
+  {name:'project_publish_file',description:'DS Project: publish a real worktree file into the project Library.',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}},
 ];
 async function call(name,input,requestId) {
   const route=`${origin}/__codex_plus/projects-lab/jobs/${job}/tools`;

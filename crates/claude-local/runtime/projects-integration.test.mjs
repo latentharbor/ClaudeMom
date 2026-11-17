@@ -18,13 +18,14 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     let raw='';for await(const part of req)raw+=part;const body=JSON.parse(raw);requests.push(body);
     const words=body.messages.map(m=>typeof m.content==='string'?m.content:m.content.map(c=>c.type==='text'?c.text:JSON.stringify(c)).join('\n')).join('\n');
     const latestUser=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:m.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')).filter(Boolean).at(-1)||'';
-    const marker=words.includes('DENY_TOOL')?'DENY_TOOL':words.includes('CANCEL_TOOL')?'CANCEL_TOOL':'ALLOW_TOOL';
+    const current=latestUser.split('Current request:\n').at(-1).split('\n\nProject Library snapshot:')[0];
+    const marker=current.includes('DENY_TOOL')?'DENY_TOOL':current.includes('CANCEL_TOOL')?'CANCEL_TOOL':'ALLOW_TOOL';
     const results=body.messages.flatMap(m=>Array.isArray(m.content)?m.content.filter(c=>c.type==='tool_result'):[]);
     if(JSON.stringify(results).includes('OWNED_LIBRARY_REFERENCE'))readMarkers.add(marker);
     let content;
-    if(latestUser.includes('Local worker event:'))content=[{type:'text',text:'COORDINATOR_SUMMARY'}];
-    else if(latestUser.includes('COORDINATOR_WORKER_'))content=[{type:'text',text:'COORDINATOR_CHILD_DONE'}];
-    else if(latestUser.includes('COORDINATE_TWO'))content=results.length?[{type:'text',text:'COORDINATOR_STARTED'}]:[
+    if(current.includes('Project worker report:'))content=[{type:'text',text:'COORDINATOR_SUMMARY'}];
+    else if(current.includes('COORDINATOR_WORKER_'))content=[{type:'text',text:'COORDINATOR_CHILD_DONE'}];
+    else if(current.includes('COORDINATE_TWO'))content=results.length?[{type:'text',text:'COORDINATOR_STARTED'}]:[
       {type:'tool_use',id:'toolu_start_a',name:'mcp__local_project__start_thread_session',input:{title:'Auto A',prompt:'COORDINATOR_WORKER_A'}},
       {type:'tool_use',id:'toolu_start_b',name:'mcp__local_project__start_thread_session',input:{title:'Auto B',prompt:'COORDINATOR_WORKER_B'}}];
     else if(results.length===0) {

@@ -35,7 +35,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     timer=setInterval(check,300);timer.unref();active.set(jobDir,timer);count();check();
   }
   function run({projectId,prompt,model,effort='low',sessionId=crypto.randomUUID(),resume=false,role='worker',
-    lane='coordinator',jobId=crypto.randomUUID(),toolToken,library=[],onPrepared=()=>{}}) {
+    lane='coordinator',jobId=crypto.randomUUID(),toolToken,library=[],onPrepared=()=>{},workspace}) {
     if(closed)throw Error('Project runner closed');
     if(!/^chan_[A-Za-z0-9_-]{1,120}$/.test(projectId)||typeof prompt!=='string'||prompt.length>200000)throw Error('Invalid local project job');
     if(typeof model!=='string'||!model||model.startsWith('-')||model.length>500)throw Error('Invalid project model');
@@ -44,7 +44,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
     if(!/^(?:coordinator|cmsg_[A-Za-z0-9_-]{1,120})$/.test(lane)||!['worker','coordinator'].includes(role))throw Error('Invalid project lane');
     if(active.size>=4)throw Error('Local project concurrency limit reached');
     const id=jobId,project=path.join(directory,projectId),jobDir=path.join(project,'jobs',id);
-    const cwd=path.join(project,'workspaces',lane),configDir=path.join(project,'cli',sessionId),tmp=path.join(jobDir,'tmp');
+    const cwd=workspace||path.join(project,'workspaces',lane),configDir=path.join(project,'cli',sessionId),tmp=path.join(jobDir,'tmp');
     for(const dir of [jobDir,cwd,configDir,tmp])fs.mkdirSync(dir,{recursive:true,mode:0o700});
     const libraryHash=crypto.createHash('sha256').update(JSON.stringify(library)).digest('hex').slice(0,20);
     const libraryRoot=path.join(cwd,'.claudemom-library',libraryHash);
@@ -69,7 +69,7 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
       '--tools',role==='coordinator'?'':'Bash,Read,Write,Edit,Glob,Grep',
       '--permission-mode','default',
       ...(toolToken?['--permission-prompt-tool','mcp__local_project__approve','--allowedTools',
-        'mcp__local_project__start_thread_session,mcp__local_project__list_thread_sessions,mcp__local_project__send_message,mcp__local_project__fetch_messages,mcp__local_project__list_project_files,mcp__local_project__read_project_file,mcp__local_project__read_memory,mcp__local_project__write_memory,mcp__local_project__create_schedule,mcp__local_project__list_schedules']:[]),
+        'mcp__local_project__start_thread_session,mcp__local_project__list_thread_sessions,mcp__local_project__send_message,mcp__local_project__fetch_messages,mcp__local_project__list_project_files,mcp__local_project__read_project_file,mcp__local_project__read_memory,mcp__local_project__write_memory,mcp__local_project__create_schedule,mcp__local_project__list_schedules,mcp__local_project__project_launch_task,mcp__local_project__project_list_threads,mcp__local_project__project_send_to_thread,mcp__local_project__project_update_thread,mcp__local_project__project_read_context,mcp__local_project__project_read_activity,mcp__local_project__project_search_history,mcp__local_project__project_remember,mcp__local_project__project_forget,mcp__local_project__project_memory_file,mcp__local_project__project_finish_task,mcp__local_project__project_publish_file']:[]),
       '--settings',JSON.stringify({sandbox:{enabled:false}})];
     privateJSON(path.join(jobDir,'status.json'),{schema:1,id,sessionId,state:'starting',createdAt:new Date().toISOString()});
     privateJSON(path.join(jobDir,'launch.json'),{id,sessionId,binary,args,prompt:prompt+`\n\nProject Library snapshot: ${libraryRoot}`,cwd,
