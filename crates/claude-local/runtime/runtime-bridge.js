@@ -25,6 +25,7 @@
     const api = window['claude.web'];
     if (!api?.LocalSessions?.getAll || !api?.LocalAgentModeSessions?.getAll) throw Error('Native idle status unavailable');
     const [code, cowork] = await Promise.all([api.LocalSessions.getAll(), api.LocalAgentModeSessions.getAll()]);
+    if (stopped) throw Error('Frontend detached');
     if (!Array.isArray(code) || !Array.isArray(cowork)) throw Error('Unknown native session list');
     const active = [...new Set([...code, ...cowork].filter(busy).map(idOf).concat([...pending], extra))];
     if (active.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id))) throw Error('Unknown task identity');
@@ -66,6 +67,8 @@
       wrapSend(window['claude.web']?.LocalSessions);
       wrapSend(window['claude.web']?.LocalAgentModeSessions);
       const snapshot = await report();
+      if (stopped) return;
+      delete window.__claudeMomRuntimeBridgeError;
       window.__claudeMomRuntimeBridgeStatus = { code: snapshot.code.length, cowork: snapshot.cowork.length,
         active: snapshot.active.length, draft: snapshot.draft, loadedRevision,
         missingModel: snapshot.code.filter(s => typeof s.model !== 'string').length };
@@ -73,23 +76,30 @@
       const retired = new Set(current.retiredSessions || []);
       const normalize = id => id?.replace(/^local_/, '');
       const stale = snapshot.code.filter(s => retired.has(normalize(idOf(s))) || retired.has(normalize(s.sessionId)));
-      if ((uiChanged || current.pendingCoreRevision || stale.length) && snapshot.active.length === 0 && !snapshot.draft &&
+      const refreshSurface = !snapshot.draft && (uiChanged || current.pendingCoreRevision);
+      if ((refreshSurface || stale.length) && snapshot.active.length === 0 &&
           current.activeWork === 0 && current.activeDictation === 0 && Date.now() - lastPrepareAttempt > 10000) {
         lastPrepareAttempt = Date.now();
         const confirmedIdle = [];
         // This native method checks private side chats, pending input, agent
         // runs and cwd/output-style changes which list snapshots cannot prove.
-        for (const session of uiChanged || current.pendingCoreRevision ? snapshot.code : stale) {
+        for (const session of refreshSurface ? snapshot.code : stale) {
           if (!session.sessionId?.startsWith('local_') || busy(session) || typeof session.model !== 'string') return;
-          const result = await window['claude.web'].LocalSessions.applyModelByRestart(session.sessionId, session.model);
-          if (!['restarted', 'applies_on_next_start'].includes(result)) return;
+          if (stopped) return;
+          const response = await window['claude.web'].LocalSessions.applyModelByRestart(session.sessionId, session.model);
+          const result = typeof response === 'string' ? response : response?.outcome;
+          window.__claudeMomLastNativeOutcome = typeof result === 'string' ? result : 'unsupported';
+          if (!['restarted', 'applies_on_next_start'].includes(result)) {
+            await report([], { toolsReady: false });
+            return;
+          }
           confirmedIdle.push(idOf(session), session.sessionId);
           sessionStorage.setItem('claudeMom.lastNativeRefresh', result);
         }
-        const final = await report([], { confirmedIdle, preparedRevision: current.pendingCoreRevision || '' });
+        const final = await report([], { confirmedIdle, preparedRevision: refreshSurface ? current.pendingCoreRevision || '' : '' });
         const latest = await state();
-        if (final.active.length || final.draft || latest.activeWork || latest.activeDictation) return;
-        if (uiChanged) {
+        if (stopped || final.active.length || final.draft || latest.activeWork || latest.activeDictation) return;
+        if (uiChanged && refreshSurface) {
           sessionStorage.setItem('claudeMom.lastUiRefresh', current.revision);
           location.reload();
           return;

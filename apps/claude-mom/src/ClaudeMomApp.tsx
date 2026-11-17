@@ -286,7 +286,7 @@ export function ClaudeMomApp() {
                 ) : null}
               </div>
             ))}
-            {status?.needsRestart ? <div className="cm-banner" data-tone="info"><span>设置变了：完全退出 Claude 后重新启动生效。</span></div> : null}
+            {status?.needsRestart ? <div className="cm-banner" data-tone="info"><span>此变更需要在任务结束后点击“停止”，再重新启动 Claude。</span></div> : null}
             {status?.updateState === 'waiting_idle' ? <div className="cm-banner" data-tone="info"><span>设置已保存：等待任务、草稿和录音结束后应用界面及工具更新。</span></div> : null}
             {status?.updateState === 'applying' ? <div className="cm-banner" data-tone="info"><span>设置已保存，正在等待本地服务确认生效。</span></div> : null}
             {status?.updateState === 'waiting_ui' ? <div className="cm-banner" data-tone="info"><span>代理已生效，界面与工具清单等待当前窗口空闲后确认更新。</span></div> : null}

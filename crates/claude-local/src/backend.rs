@@ -1744,6 +1744,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
     let active_dictation = runtime.as_ref().and_then(|(_, _, _, h)| h.get("activeDictation")).and_then(Value::as_u64).unwrap_or(0);
     let needs_restart = (config.enabled && claude_running && (!local_process || !running))
         || (claude_running && launch_change_pending(&config))
+        || (config.three_p_mode && runtime.as_ref().is_some_and(|(_, _, _, h)| !h.get("pendingCoreRevision").is_none_or(Value::is_null)))
         || (!independent && (runtime
             .as_ref()
             .is_some_and(|(_, _, hash, _)| hash != &config_hash(&config))
@@ -1752,7 +1753,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
     let update_state = if needs_restart { "restart_required" }
         else if runtime.as_ref().is_some_and(|(_, _, _, h)| !h.get("pendingCoreRevision").is_none_or(Value::is_null)) { "waiting_idle" }
         else if runtime.as_ref().is_some_and(|(_, _, hash, _)| hash != &config_hash(&config)) { "applying" }
-        else if independent && runtime.as_ref().is_some_and(|(_, _, _, h)| h.get("uiAppliedRevision") != h.get("coreRevision")) { "waiting_ui" }
+        else if independent && !config.three_p_mode && runtime.as_ref().is_some_and(|(_, _, _, h)| h.get("uiAppliedRevision") != h.get("coreRevision")) { "waiting_ui" }
         else { "applied" }.to_string();
     let preview = host().preview_upstream(&config);
     let (models, hidden_models, context_window, upstream_problem) = match &preview {

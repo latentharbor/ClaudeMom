@@ -25,6 +25,8 @@ jobs:
           cache-dependency-path: apps/claude-mom/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Inspection syntax and certificate boundary
         run: |
           node --check scripts/verify-ui-lab.mjs
@@ -37,11 +39,17 @@ jobs:
           npm run check
           npm test
           npm run tauri -- build --bundles app --config src-tauri/tauri.lab.conf.json
+      - name: Package isolated manager for review
+        run: |
+          codesign --verify --deep --strict 'target/release/bundle/macos/ClaudeMom UI Lab.app'
+          mkdir -p isolated-manager-artifacts
+          ditto -c -k --keepParent 'target/release/bundle/macos/ClaudeMom UI Lab.app' isolated-manager-artifacts/ClaudeMom-Hot-Reload-Lab.zip
+          (cd isolated-manager-artifacts && shasum -a 256 ClaudeMom-Hot-Reload-Lab.zip > SHA256SUMS)
       - name: Runtime ownership, hot configuration and compatibility contracts
         working-directory: crates/claude-local/runtime
         run: |
           bash scripts/gen-ca.sh
-          node --test --test-timeout=120000 hot-runtime.test.mjs local-policy.test.mjs service.test.mjs browser-site-consent.test.mjs site-policy.test.mjs managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs scripts/*.test.mjs
+          node --test --test-timeout=120000 hot-runtime.test.mjs runtime-bridge.test.mjs local-policy.test.mjs service.test.mjs browser-site-consent.test.mjs site-policy.test.mjs managed.test.mjs proxy.test.mjs desktop-ui.test.mjs ui-resources.test.mjs scripts/*.test.mjs
       - name: Rust lifecycle and isolation contracts
         run: cargo test --workspace
       - name: Prepare owned Desktop fixture
@@ -77,3 +85,9 @@ jobs:
           name: Frontend-reload-evidence
           path: reload-evidence/
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Isolated-hot-reload-manager
+          path: isolated-manager-artifacts/
+          if-no-files-found: error

@@ -23,6 +23,7 @@ fs.mkdirSync(output, { recursive: true });
 const root = path.join(os.homedir(), ".claude-mom-ui-lab");
 const requests = [];
 let alternate;
+let serviceProbeRequest;
 const upstream = http.createServer(async (req, res) => {
   if (req.url === "/reload-probe-page") {
     res.writeHead(200, { "content-type": "text/html" });
@@ -293,6 +294,7 @@ try {
         assert.equal(response.status, 200); await response.text();
         return requests.at(-1).endpointPort;
       };
+      serviceProbeRequest = probe;
       assert.equal(await probe(sessionId.slice(6)), upstream.address().port, 'active task retains old route');
       assert.equal(await probe(crypto.randomUUID()), alternate.address().port, 'new task uses new route');
       const consent = (await evaluateFrontend("fetch('/__codex_plus/browser-site-consent.json',{cache:'no-store'}).then(r=>r.json())")).value;
@@ -359,6 +361,12 @@ try {
     result.checks.reloadProbeExecuted = true;
     finishHeld();
     if (serviceProbe) {
+      await until(async () => (await evaluateFrontend("fetch('/__codex_plus/runtime-state').then(r=>r.json()).then(s=>!s.retiredSessions.includes('11111111-1111-4111-8111-111111111112'))")).value);
+      assert.equal((await evaluateFrontend(` [...document.querySelectorAll('textarea,[contenteditable="true"]')].some(e=>(e.value||e.innerText||'').includes(${JSON.stringify(draft)}))`)).value, true,
+        'idle routing retirement does not discard a composed next message');
+      assert.equal(await serviceProbeRequest(sessionId.slice(6)), alternate.address().port,
+        'the completed session uses the new route on its next task');
+      result.service.completedSessionUsesNewRoute = true;
       const health = () => fetch(`http://127.0.0.1:${ready.port}/__codex_claude_local/health`).then(r => r.json());
       const before = await health();
       const file = path.join(root, 'claude-local/service-config.json');
