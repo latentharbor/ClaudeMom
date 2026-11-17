@@ -46,7 +46,6 @@ export function projectSandbox({workspace,configDir,tmp,sockets,binary,nodeBinar
     '(allow process-exec process-fork)',
     '(allow process-info* signal mach-priv-task-port (target same-sandbox))',
     '(allow user-preference-read)',
-    '(allow ipc-posix-shm ipc-posix-sem)',
     '(allow sysctl-read (sysctl-name-prefix "hw.") (sysctl-name-prefix "machdep.cpu.")',
     '  (sysctl-name "kern.argmax") (sysctl-name "kern.maxfiles") (sysctl-name "kern.maxfilesperproc")',
     '  (sysctl-name "kern.osrelease") (sysctl-name "kern.ostype") (sysctl-name "kern.osversion")',

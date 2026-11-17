@@ -40,6 +40,7 @@ test('full process and MCP-like child cannot escape filesystem, IPC or broker bo
   let otherHits=0;
   const broker=http.createServer((req,res)=>res.end('OWNED_BROKER')),other=http.createServer((req,res)=>{otherHits++;res.end('wrong');});
   const outsideIPC=net.createServer(socket=>socket.end('wrong'));
+  const unrelated=spawn('/bin/sleep',['30'],{stdio:'ignore'});
   broker.listen(0,'127.0.0.1');other.listen(0,'127.0.0.1');outsideIPC.listen(path.join(root,'outside.sock'));
   await Promise.all([once(broker,'listening'),once(other,'listening'),once(outsideIPC,'listening')]);
   const plan=projectSandbox({...dirs,binary:process.execPath,nodeBinary:process.execPath,mcpFile,port:broker.address().port});
@@ -55,6 +56,9 @@ test('full process and MCP-like child cannot escape filesystem, IPC or broker bo
     r.gitWrite=blocked(()=>fs.writeFileSync('.git','bad'));r.mcpConfig=fs.readFileSync(${JSON.stringify(mcpFile)},'utf8')==='{}';
     const child=cp.spawnSync(process.execPath,['-e',${JSON.stringify(`try{require('fs').readFileSync(${JSON.stringify(secret)});process.exit(7);}catch{console.log('MCP_CHILD_DENIED');}`)}],{encoding:'utf8'});
     r.childInherited=child.status===0&&child.stdout.includes('MCP_CHILD_DENIED');
+    r.foreignSignal=blocked(()=>process.kill(${unrelated.pid},'SIGTERM'));
+    const shell=cp.spawnSync('/bin/zsh',['-f','-c',${JSON.stringify('cat <<EOF\nOWNED_HERE_DOCUMENT\nEOF\n')}],{encoding:'utf8'});
+    r.shellAllowed=shell.status===0&&shell.stdout.trim()==='OWNED_HERE_DOCUMENT';
     const escape=cp.spawnSync('/usr/bin/sandbox-exec',['-p','(version 1)(allow default)',process.execPath,'-e',${JSON.stringify(`require('fs').readFileSync(${JSON.stringify(secret)})`)}],{encoding:'utf8'});
     r.noSandboxEscape=escape.status!==0;
     r.broker=(await(await fetch('http://127.0.0.1:${broker.address().port}')).text())==='OWNED_BROKER';
@@ -63,12 +67,12 @@ test('full process and MCP-like child cannot escape filesystem, IPC or broker bo
     console.log(JSON.stringify(r));})().catch(e=>{console.error(e);process.exitCode=1;});`;
   try{
     const command=sandboxCommand(plan,profileFile,process.execPath,['-e',code]);
-    const actor=spawn(command.command,command.args,{cwd:dirs.workspace,env:{PATH:'/usr/bin:/bin',TMPDIR:dirs.tmp},stdio:['ignore','pipe','pipe']});
+    const actor=spawn(command.command,command.args,{cwd:dirs.workspace,env:{PATH:'/usr/bin:/bin',TMPDIR:dirs.tmp,TMPPREFIX:path.join(dirs.tmp,'zsh')},stdio:['ignore','pipe','pipe']});
     let out='',err='';actor.stdout.on('data',p=>out+=p);actor.stderr.on('data',p=>err+=p);const [status,signal]=await once(actor,'close');
-    assert.equal(status,0,err+' signal='+signal);const checks=JSON.parse(out);assert.equal(Object.keys(checks).length,17);
+    assert.equal(status,0,err+' signal='+signal);const checks=JSON.parse(out);assert.equal(Object.keys(checks).length,19);
     for(const [name,value]of Object.entries(checks))assert.equal(value,true,name);assert.equal(otherHits,0);
-    assert.equal(fs.readFileSync(secret,'utf8'),'PRIVATE_SENTINEL');
+    assert.equal(fs.readFileSync(secret,'utf8'),'PRIVATE_SENTINEL');assert.equal(unrelated.exitCode,null);
     assert.throws(()=>sandboxCommand(plan,path.join(root,'missing.sb'),process.execPath,['-e','process.exit(0)']),ProjectSandboxError,'invalid sandbox never starts an unrestricted actor');
   }catch(error){if(error.diagnostic)console.error(error.diagnostic);throw error;}
-  finally{broker.closeAllConnections();other.closeAllConnections();await Promise.all([new Promise(r=>broker.close(r)),new Promise(r=>other.close(r)),new Promise(r=>outsideIPC.close(r))]);fs.rmSync(root,{recursive:true,force:true});}
+  finally{unrelated.kill();broker.closeAllConnections();other.closeAllConnections();await Promise.all([new Promise(r=>broker.close(r)),new Promise(r=>other.close(r)),new Promise(r=>outsideIPC.close(r))]);fs.rmSync(root,{recursive:true,force:true});}
 });

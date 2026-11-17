@@ -38,6 +38,7 @@ jobs:
       - name: Bundled CLI and MCP under the production boundary
         env:
           GH_TOKEN: ${{ github.token }}
+          SHELL: /bin/zsh
         run: |
           mkdir -p fixture sandbox-evidence
           gh release download lab-fixtures-5.11492.5 -R "$GITHUB_REPOSITORY" -p cli-cache-2.1.325.zip -p SHA256SUMS --dir fixture
