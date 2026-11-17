@@ -70,6 +70,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/evaluate") {
       return res.end(JSON.stringify({ result: await entry.frame.executeJavaScript(payload.expression, true) }));
     }
+    if (req.method === "POST" && req.url === "/reload-frontend") {
+      if (!entry.frame.url.startsWith("https://claude.ai/epitaxy")) throw Error("Not the isolated main frontend");
+      res.end(JSON.stringify({ reloading: true, contentsId: entry.wc.id }));
+      setTimeout(() => { if (!entry.wc.isDestroyed()) entry.wc.reload(); }, 50);
+      return;
+    }
     if (req.method === "POST" && req.url === "/screenshot") {
       if (!/^[a-z0-9-]+\.png$/.test(payload.name)) throw Error("Invalid output name");
       const image = await entry.wc.capturePage();

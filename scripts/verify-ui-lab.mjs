@@ -9,11 +9,23 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
 const [manager, officialApp, reference, ca, cliCache, output, webCache] = process.argv.slice(2);
+const reloadProbe = process.argv.includes("--probe-reload");
+const held = [];
+function finishHeld() {
+  for (const entry of held) {
+    if (entry.response.destroyed || entry.response.writableEnded) continue;
+    entry.response.end(entry.tail);
+  }
+}
 assert.ok(output && manager && officialApp && reference && ca && cliCache);
 fs.mkdirSync(output, { recursive: true });
 const root = path.join(os.homedir(), ".claude-mom-ui-lab");
 const requests = [];
 const upstream = http.createServer(async (req, res) => {
+  if (req.url === "/reload-probe-page") {
+    res.writeHead(200, { "content-type": "text/html" });
+    return res.end("<!doctype html><title>Reload fixture</title><p>Owned reload fixture only</p>");
+  }
   let raw = "";
   for await (const part of req) raw += part;
   if (req.url.startsWith("/v1/messages")) {
@@ -30,7 +42,17 @@ const upstream = http.createServer(async (req, res) => {
       { type: "message_stop" },
     ];
     res.writeHead(200, { "content-type": "text/event-stream" });
-    return res.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+    const wire = event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    if (reloadProbe && (body.model === "fixture/claude-sonnet-5-5" && raw.includes("UI_LAB_ROUTING") ||
+        body.model === "fixture/claude-opus-5-5" && raw.includes("UI_LAB_CHAT_RELOAD"))) {
+      const entry = { response: res, tail: events.slice(3).map(wire).join(""), aborted: false,
+        kind: raw.includes("UI_LAB_CHAT_RELOAD") ? "chat" : "code" };
+      held.push(entry);
+      res.once("close", () => { if (!res.writableFinished) entry.aborted = true; });
+      res.write(events.slice(0, 3).map(wire).join(""));
+      return;
+    }
+    return res.end(events.map(wire).join(""));
   }
   res.writeHead(200, { "content-type": "application/json" });
   res.end("{}");
@@ -212,13 +234,71 @@ try {
   assert.ok(requests.some((request) => request.model === "fixture/claude-sonnet-5-5"),
     "The resumed native Sonnet model must not silently become the default Opus route");
   result.checks.nativeCodeUsesConfiguredGateway = true;
-  await until(async () => {
+  if (reloadProbe) {
+    const sessionId = "local_11111111-1111-4111-8111-111111111112";
+    const previewId = "preview-" + sessionId;
+    const query = expression => evaluate(codeFrame, expression);
+    const codeEntry = await until(() => held.find(entry => entry.kind === "code"));
+    await until(async () => (await query(`window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)})`))?.isRunning);
+    const preview = await query(`window['claude.web'].Launch.startBrowserPreview(${JSON.stringify(path.join(root, "scratch"))},${JSON.stringify(sessionId)})`);
+    assert.equal(preview, previewId);
+    for (let i = 0; i < 2; i++) {
+      const tab = await query(`window['claude.web'].Launch.openPreviewTab(${JSON.stringify(previewId)},${JSON.stringify(path.join(root, "scratch"))})`);
+      assert.equal(typeof tab, "string");
+      await query(`window['claude.web'].Launch.navigatePreview(${JSON.stringify(previewId)},${JSON.stringify(`http://127.0.0.1:${upstream.address().port}/reload-probe-page`)},${JSON.stringify(tab)})`);
+    }
+    const beforeTabs = await query(`window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`);
+    const draft = "UI_LAB_UNSENT_DRAFT";
+    const draftSet = await query(`(() => {
+      const e=[...document.querySelectorAll('textarea,[contenteditable="true"]')].find(e=>e.getBoundingClientRect().width>20);
+      if(!e)return false;e.focus();
+      if(e.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(draft)});e.dispatchEvent(new Event('input',{bubbles:true}));}
+      else document.execCommand('insertText',false,${JSON.stringify(draft)});
+      return true;
+    })()`);
+    assert.equal(draftSet, true);
+    await delay(1500);
+    const requestCount = requests.length;
+    await rpc("/reload-frontend", { id: codeFrame.id });
+    const afterFrame = await until(async () => {
+      const current=(await frames()).find(frame=>frame.url.startsWith('https://claude.ai/epitaxy'));
+      if(!current)return false;
+      return await evaluate(current,"document.readyState==='complete' && !!window['claude.web']?.LocalSessions") ? current : false;
+    }, 60000);
+    await delay(5000);
+    const afterSession = await evaluate(afterFrame, `window['claude.web'].LocalSessions.getSession(${JSON.stringify(sessionId)})`);
+    const afterTabs = await evaluate(afterFrame, `window['claude.web'].Launch.getPreviewTabs(${JSON.stringify(previewId)})`);
+    const draftPreserved = await evaluate(afterFrame, ` [...document.querySelectorAll('textarea,[contenteditable="true"]')].some(e=>(e.value||e.innerText||'').includes(${JSON.stringify(draft)}))`);
+    const ids = value => (value?.tabs || []).map(tab => tab.tabId).sort();
+    result.reload = { desktopPidUnchanged: (await rpc('/status')).pid===control.pid,
+      code: { runningBefore: true, runningAfter: afterSession?.isRunning===true,
+        upstreamAborted: codeEntry.aborted, extraRequests: requests.length-requestCount,
+        tabsBefore: ids(beforeTabs), tabsAfter: ids(afterTabs), draftPreserved } };
+    result.reload.code.tabsPreserved = JSON.stringify(ids(beforeTabs))===JSON.stringify(ids(afterTabs));
+    finishHeld();
+    await delay(3000);
+    // A renderer-owned completion uses the same request lifetime as Chat,
+    // without sending anything to a real provider or altering live chats.
+    const conv=crypto.randomUUID();
+    await evaluate(afterFrame, `(async()=>{
+      await fetch('/api/organizations/local/chat_conversations',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({uuid:${JSON.stringify(conv)}})});
+      window.__chatReloadProbe=fetch('/api/organizations/local/chat_conversations/${conv}/completion',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:'UI_LAB_CHAT_RELOAD',turn_message_uuids:{human_message_uuid:crypto.randomUUID(),assistant_message_uuid:crypto.randomUUID()}})}).then(async r=>{const reader=r.body.getReader();while(!(await reader.read()).done){} }).catch(()=>{});
+      return true;
+    })()`);
+    const chatEntry = await until(() => held.find(entry=>entry.kind==='chat'));
+    await rpc('/reload-frontend', {id:afterFrame.id});
+    await delay(5000);
+    result.reload.rendererOwnedChat = { upstreamAborted: chatEntry.aborted,
+      scope: 'renderer-owned REST completion, not a Cowork VM execution' };
+    result.checks.reloadProbeExecuted = true;
+    finishHeld();
+  } else await until(async () => {
     for (const frame of await frames()) {
       try { if(await evaluate(frame, "document.body?.innerText?.includes('UI_LAB_ROUTING_OK')")) return true; } catch {}
     }
     return false;
   }, 45000);
-  result.checks.nativeCodeReplyRendered = true;
+  if (!reloadProbe) result.checks.nativeCodeReplyRendered = true;
   // The manager's copied resource file and captured screenshots are the native
   // UI check. Payload preservation is covered independently by runtime CI.
   for (const file of fs.readdirSync(root).filter((file) => /^frame-\d+\.png$/.test(file))) {
@@ -228,6 +308,7 @@ try {
   result.errors.push(error.stack || String(error));
   process.exitCode = 1;
 } finally {
+  finishHeld();
   if (control) {
     try {
       const current = await frames();

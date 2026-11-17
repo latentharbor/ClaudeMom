@@ -1,0 +1,66 @@
+name: Frontend reload audit
+on:
+  push:
+    branches: [audit-hot-reload-20261117]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: reload-audit-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  isolated-reload:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      CLAUDE_MOM_LAB_BUILD: '1'
+      VITE_CLAUDE_MOM_LAB_BUILD: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/claude-mom/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Inspection syntax and certificate boundary
+        run: |
+          node --check scripts/verify-ui-lab.mjs
+          node --check scripts/ui-lab-bootstrap.cjs
+          node --test scripts/lab-certificate-policy.test.cjs
+      - name: Build isolated manager only
+        working-directory: apps/claude-mom
+        run: |
+          npm ci
+          npm run tauri -- build --bundles app --config src-tauri/tauri.lab.conf.json
+      - name: Prepare owned Desktop fixture
+        run: |
+          test "$(uname -m)" = arm64
+          mkdir -p fixture reload-evidence
+          gh release download lab-fixtures-5.11492.5 -R "$GITHUB_REPOSITORY" --dir fixture
+          (cd fixture && shasum -a 256 -c SHA256SUMS)
+          ditto -x -k fixture/Claude-5.11492.5.zip fixture
+          ditto -x -k fixture/cli-cache-2.1.325.zip fixture
+          ditto -x -k fixture/web-cache.zip fixture
+          codesign --verify --deep --strict fixture/Claude.app
+          cd crates/claude-local/runtime
+          bash scripts/gen-ca.sh
+          sudo security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain ca/ca.pem
+      - name: Observe frontend reload during fixture tasks
+        run: |
+          node scripts/verify-ui-lab.mjs \
+            "$PWD/target/release/bundle/macos/ClaudeMom UI Lab.app" \
+            "$PWD/fixture/Claude.app" \
+            "$PWD/fixture/desktop-features.json" \
+            "$PWD/crates/claude-local/runtime/ca" \
+            "$PWD/fixture/cli-cache" \
+            "$PWD/reload-evidence" \
+            "$PWD/fixture/web-cache" --probe-reload
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Frontend-reload-evidence
+          path: reload-evidence/
+          if-no-files-found: warn
