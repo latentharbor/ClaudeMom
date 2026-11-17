@@ -2,6 +2,7 @@
 // frontend reloads and compatibility-core replacement. No upstream key is used.
 import readline from 'node:readline';
 import {setTimeout as delay} from 'node:timers/promises';
+import {coordinatorTools} from './third-party/ds-project/coordinator.js';
 
 const origin=process.env.LOCAL_PROJECT_ORIGIN,token=process.env.LOCAL_PROJECT_TOKEN,job=process.env.LOCAL_PROJECT_JOB;
 const tools=[
@@ -53,6 +54,7 @@ async function call(name,input,requestId) {
   return{behavior:'deny',message:'The local permission request expired.'};
 }
 const send=value=>process.stdout.write(JSON.stringify(value)+'\n');
+const coordinatorCatalog=new Set([...coordinatorTools,'approve','start_thread_session','list_thread_sessions','send_message','fetch_messages','list_project_files','read_project_file','read_memory','write_memory','create_schedule','list_schedules']);
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on('line',line=>{
   void(async()=>{
     let request;try{request=JSON.parse(line);}catch{return;}
@@ -61,7 +63,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on('line',lin
       let result;
       if(request.method==='initialize')result={protocolVersion:request.params?.protocolVersion||'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'claudemom-local-project',version:'1'}};
       else if(request.method==='ping')result={};
-      else if(request.method==='tools/list')result={tools:process.env.LOCAL_PROJECT_ROLE==='coordinator'?tools:tools.filter(t=>!['start_thread_session','send_message','create_schedule'].includes(t.name))};
+      else if(request.method==='tools/list')result={tools:process.env.LOCAL_PROJECT_ROLE==='coordinator'?tools.filter(t=>coordinatorCatalog.has(t.name)):tools.filter(t=>!['start_thread_session','send_message','create_schedule'].includes(t.name))};
       else if(request.method==='tools/call')result={content:[{type:'text',text:JSON.stringify(await call(request.params.name,request.params.arguments||{},request.id))}]};
       else throw Error('Unknown local MCP method');
       send({jsonrpc:'2.0',id:request.id,result});

@@ -40,6 +40,10 @@ test('parallel lanes, durable approval, deny and queued follow-up survive a core
   const jobs=f.backend.snapshot().jobs;assert.equal(jobs.filter(j=>j.state==='running').length,2);
   assert.notEqual(jobs[0].session_id,jobs[1].session_id);
   assert.notEqual([...f.hosts.values()][0].options.lane,[...f.hosts.values()][1].options.lane);
+  const nativeThreads=f.backend.snapshot().threads;
+  assert.notEqual(nativeThreads[0].branch,nativeThreads[1].branch);
+  assert.equal(nativeThreads[0].base_commit,nativeThreads[1].base_commit);
+  assert.ok(fs.statSync(path.join(nativeThreads[0].working_directory,'.git')).isFile(),'each worker has its own linked worktree');
   assert.equal([...f.hosts.values()][1].options.prompt.includes('One task'),false,'a new worker does not inherit another worker\'s task history');
   await f.request(base+'/messages','POST',{body:'Queued continuation',in_reply_to_message_id:first.id});
   assert.equal(f.backend.snapshot().jobs.filter(j=>j.state==='queued').length,1);
@@ -52,8 +56,10 @@ test('parallel lanes, durable approval, deny and queued follow-up survive a core
   assert.equal((await f.request(base+'/permissions/'+permission.body.id,'POST',{decision:'deny'})).status,200);
   assert.equal((await f.request(tool+'/'+permission.body.id,'GET',undefined,job.tool_token)).body.state,'denied');
   assert.equal((await f.request(base+'/permissions/'+permission.body.id,'POST',{decision:'allow'})).status,409);
+  fs.writeFileSync(path.join(nativeThreads.find(t=>t.id===first.id).working_directory,'owned-output.txt'),'DS Project output');
   f.hosts.get(job.id).complete({state:'completed',result:'First result'});
   await until(()=>f.hosts.size===3);
+  assert.ok(f.backend.snapshot().files.some(f=>f.kind==='output'&&f.path.endsWith('owned-output.txt')));
   assert.equal([...f.hosts.values()].at(-1).options.resume,true);
   assert.equal([...f.hosts.values()].at(-1).options.prompt.includes('Recent conversation:'),false);
   const other=jobs.find(j=>j.thread_root_id===second.id);f.hosts.get(other.id).complete({state:'completed',result:'Second result'});

@@ -198,7 +198,7 @@ export class LocalDSProjects {
     let file;if(found){if(!overwrite)return{path:name,error_reason:'already_exists'};
       const target=within(libraryRoot(p),name),temporary=target+'.'+crypto.randomUUID()+'.next';fs.writeFileSync(temporary,bytes,{mode:0o600});fs.renameSync(temporary,target);file=found;file.size=bytes.length;delete file.content;
     }else file=importLibraryFile(this.engine.store,p,name,content);
-    if(sourceFileId)file.sourceFileId=sourceFileId;this.engine.store.save();return{path:name,entry:this.files(p).find(f=>f.path===name)};
+    if(sourceFileId)file.sourceFileId=sourceFileId;this.engine.store.save();const entry=this.files(p).find(f=>f.path===name);return{path:name,content_sha256:entry.content_sha256,entry};
   }
   collectArtifacts(t,job) {
     if(t.kind==='main'||!t.worktree)return;
