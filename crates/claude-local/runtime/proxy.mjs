@@ -116,6 +116,8 @@ function addLocalizationShim(html, officialLocales) {
 
 function addDesktopShims(html, locales) {
   html = addLocalizationShim(html, locales);
+  if(projectsLab&&!html.includes('src="/__codex_plus/projects-lab/ui.js"'))html=html.replace(/<head\b[^>]*>/i,
+    head=>head+'<script src="/__codex_plus/projects-lab/ui.js"></script>');
   if (runtimeBridge && !html.includes('src="/__codex_plus/runtime-bridge.js"')) {
     const revision = /^[a-f0-9]{64}$/.test(process.env.CLAUDE_LOCAL_UI_REVISION || '') ? process.env.CLAUDE_LOCAL_UI_REVISION : '';
     html = html.replace(/<head\b[^>]*>/i, head => `${head}<meta name="claudemom-ui-revision" content="${revision}"><script src="/__codex_plus/runtime-bridge.js"></script>`);
@@ -578,7 +580,7 @@ if(projectsLab) {
   const runner=binary?createProjectRunner({directory:path.join(directory,'execution'),binary,clientKey,profileHome,
     baseUrl:()=>`http://127.0.0.1:${process.env.CLAUDE_LOCAL_PUBLIC_PROXY_PORT||listeningPort}`}):undefined;
   localProjects=createLocalProjects({directory,accountId:ACCOUNT.uuid,models:()=>hot.current,clientKey,runner,
-    onActiveChange:count=>{localProjectTasks=count;writeReady();}});
+    onActiveChange:count=>{localProjectTasks=count;writeReady();},onTaskFinished:session=>hot.confirmIdle([session])});
 }
 
 function pushMessage(conv, msg) {
@@ -2187,6 +2189,10 @@ function handleSnapshot(req, res, hostHeader) {
 
   const hostName = url.hostname.toLowerCase();
   const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
+  if(projectsLab&&isMainClaudeHost&&url.pathname==='/__codex_plus/projects-lab/ui.js') {
+    res.writeHead(200,{'content-type':'application/javascript; charset=utf-8','cache-control':'no-store'});
+    return res.end(fs.readFileSync(path.join(here,'projects-ui.js')));
+  }
   // Projects uses /v1, outside the older /api mock dispatcher. Never let an
   // owned local project request fall through to Anthropic's cloud backend.
   if(localProjects?.matches(url)&&(isMainClaudeHost||hostName==='api.anthropic.com'))return mockApi(req,res,url);
@@ -2836,6 +2842,8 @@ inner.on("upgrade", handleDictationUpgrade);
 // 剥掉桌面端多发、上游网关不认的字段后转给本地 magpie。
 const outer = http.createServer((req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+  if(localProjects&&/^\/__codex_plus\/projects-lab\/jobs\/[a-f0-9-]{36}\/tools(?:\/perm_[A-Za-z0-9_-]+)?$/.test(u.pathname))
+    return void localProjects.handle(req,res,u).catch(()=>json(res,{error:{message:'Invalid local task request'}},400));
   if (runtime.managed && req.headers.origin !== undefined) return json(res, { error: "Browser origins are not allowed" }, 403);
   if (req.method === "GET" && u.pathname === "/__codex_claude_local/health") return json(res, health());
   if (runtime.managed) {
@@ -2849,6 +2857,7 @@ const outer = http.createServer((req, res) => {
     }
   }
   noteClient();
+  if(localProjects?.matches(u))return void localProjects.handle(req,res,u).catch(()=>json(res,{error:{message:'Invalid local project request'}},400));
   const fwd = (body) => forwardGateway(req, res, u.pathname + u.search, body);
   if (req.method === "GET" && u.pathname === "/v1/models") return json(res, modelList(runtime));
   if (req.method === "POST" && u.pathname === "/v1/messages") {

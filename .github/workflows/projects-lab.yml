@@ -33,7 +33,9 @@ jobs:
         run: |
           node --check scripts/verify-ui-lab.mjs
           node --check scripts/verify-projects-lab.mjs
-          node --test crates/claude-local/runtime/projects-local.test.mjs
+          node --check crates/claude-local/runtime/projects-ui.js
+          node --check crates/claude-local/runtime/projects-mcp.mjs
+          node --test crates/claude-local/runtime/projects-local.test.mjs crates/claude-local/runtime/projects-engine.test.mjs
       - name: Build isolated manager
         working-directory: apps/claude-mom
         run: |
@@ -61,7 +63,7 @@ jobs:
           export PROJECTS_TEST_CLI="$PWD/$(find fixture/cli-cache -path '*/claude.app/Contents/MacOS/claude' -type f -print -quit)"
           test -x "$PROJECTS_TEST_CLI"
           export PROJECTS_TEST_EVIDENCE="$PWD/projects-evidence/runner"
-          node --test crates/claude-local/runtime/projects-runner.test.mjs
+          node --test crates/claude-local/runtime/projects-integration.test.mjs
       - name: Native Projects UI and local API
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         run: |

@@ -13,9 +13,10 @@ const record=values=>{
   fs.writeFileSync(tmp,JSON.stringify({schema:1,id:config.id,sessionId:config.sessionId,...values}),{mode:0o600});
   fs.renameSync(tmp,path.join(directory,'status.json'));
 };
-let output='',errors='',finished=false;
+let output='',errors='',finished=false,cancelled=false;
 function finish(values) {
   if(finished)return;finished=true;
+  clearInterval(cancellation);
   let answer;
   for(const line of output.split('\n')) {
     try{const value=JSON.parse(line);if(value.type==='result')answer=value;}catch{}
@@ -23,13 +24,20 @@ function finish(values) {
   if(!answer)try{const value=JSON.parse(output);answer=(Array.isArray(value)?value:[value]).findLast(v=>v?.type==='result');}catch{}
   fs.writeFileSync(path.join(directory,'stdout.log'),output,{mode:0o600});
   fs.writeFileSync(path.join(directory,'stderr.log'),errors,{mode:0o600});
-  record({state:values.code===0&&answer&&answer.is_error!==true?'completed':'failed',finishedAt:new Date().toISOString(),
+  record({state:cancelled?'cancelled':values.code===0&&answer&&answer.is_error!==true?'completed':'failed',finishedAt:new Date().toISOString(),
     result:typeof answer?.result==='string'?answer.result.slice(0,100000):'',
     usage:answer?.usage||{},...values,
     // Error text stays in the private job folder, never in a public health API.
     error:values.code===0?undefined:errors.slice(-4000)});
 }
-const cli=spawn(config.binary,config.args,{cwd:config.cwd,env:config.env,stdio:['pipe','pipe','pipe']});
+const cli=spawn(config.binary,config.args,{cwd:config.cwd,env:config.env,detached:true,stdio:['pipe','pipe','pipe']});
+const cancellation=setInterval(()=>{
+  if(finished||cancelled)return;
+  try{if(JSON.parse(fs.readFileSync(path.join(directory,'cancel.json'))).token!==config.controlToken)return;}catch{return;}
+  cancelled=true;
+  try{process.kill(-cli.pid,'SIGTERM');}catch{}
+  setTimeout(()=>{if(!finished)try{process.kill(-cli.pid,'SIGKILL');}catch{}},5000).unref();
+},300);
 record({state:'running',startedAt:new Date().toISOString(),hostPid:process.pid,pid:cli.pid});
 cli.once('error',()=>finish({code:-1}));
 cli.stdout.on('data',part=>{
