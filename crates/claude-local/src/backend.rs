@@ -1453,10 +1453,12 @@ fn launch_hash(config: &ClaudeLocalSettings) -> String {
 }
 
 fn launch_change_pending(config: &ClaudeLocalSettings) -> bool {
-    fs::read(root_dir().join("launch.json")).ok()
+    let file = root_dir().join("launch.json");
+    if !file.exists() { return false; }
+    fs::read(file).ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|v| v.get("launchHash").and_then(Value::as_str).map(str::to_owned))
-        .is_some_and(|hash| hash != launch_hash(config))
+        .is_none_or(|hash| hash != launch_hash(config))
 }
 
 fn hash_with_desktop(config: &ClaudeLocalSettings, upstream: Value, desktop: Option<(u64, u128)>) -> String {
