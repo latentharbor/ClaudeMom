@@ -43,5 +43,24 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   result.projects.createdId=saved.channels[0].id;
   result.checks.nativeProjectCreatedInLocalStore=true;
   await delay(2000);result.projects.created=(await inspect()).state;
+  const project=saved.channels[0].id;
+  const sent=await evaluate(await frontend(),`fetch('/v1/code/channels/${project}/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({body:'UI_LAB_LOCAL_PROJECT_COORDINATOR',client_message_id:'cmsg_local_coordinator_fixture'})}).then(async r=>({status:r.status,body:await r.json()}))`);
+  result.projects.send=sent;
+  assert.equal(sent.status,200,'Local Projects must have a real execution backend');
+  const reply=await until(()=>{
+    const state=JSON.parse(fs.readFileSync(file));
+    return state.messages.find(m=>m.author_session_id&&m.body.includes('UI_LAB_ROUTING_OK'));
+  },60000);
+  result.checks.localCoordinatorCompleted=true;
+  const beforeReload=await frontend();
+  try{await evaluate(beforeReload,'location.reload();true');}catch{}
+  await delay(5000);
+  const rendered=await until(async()=>{
+    const frame=await frontend();return frame&&await evaluate(frame,"document.body.innerText.includes('UI_LAB_ROUTING_OK')");
+  },30000);
+  assert.equal(rendered,true,'Stored local reply appears in the official Projects timeline after reload');
+  result.checks.localProjectReplySurvivesFrontendReload=true;
+  result.projects.replyId=reply.id;
+  result.projects.reloaded=(await inspect()).state;
   fs.writeFileSync(path.join(output,'projects-observations.json'),JSON.stringify(seen,null,2));
 }

@@ -84,14 +84,14 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
       const channel=find(job.channel_id),input=data.messages.find(m=>m.id===job.input_id);
       if(!channel||!input){job.state='failed';save();continue;}
       const history=data.messages.filter(m=>m.channel_id===channel.id&&m.created_at<=input.created_at).slice(-20)
-        .map(m=>`${m.author_account_id?'User':'Assistant'}: ${m.body}`).join('\n').slice(-100000);
+        .map(m=>`${m.author_account_id?'User':'Assistant'}: ${m.body}`).join('\n').slice(-50000);
       const prompt=`This is a locally hosted project. Work only in the supplied project workspace.\nProject: ${channel.name}\nInstructions:\n${channel.system_prompt_addendum||''}\nRecent conversation:\n${history}\n\nCurrent request:\n${input.body}`;
       try{
         const task=runner.run({projectId:channel.id,prompt,model:job.model,sessionId:job.session_id,
           resume:data.jobs.some(j=>j.id!==job.id&&j.session_id===job.session_id&&j.state==='completed')});
         job.state='running';job.directory=task.directory;job.started_at=now();save();changed();
         observed.add(job.id);void task.done.then(result=>settle(job,result));
-      }catch{job.state='failed';save();changed();}
+      }catch{settle(job,{state:'failed',result:''});}
     }
   }
   // A core restart observes existing detached hosts; it never replays a tool

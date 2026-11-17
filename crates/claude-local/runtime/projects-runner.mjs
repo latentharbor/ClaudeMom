@@ -13,7 +13,9 @@ export function createProjectRunner({directory,binary,baseUrl,clientKey,profileH
   function environment(configDir,tmp) {
     // In particular, do not pass CI tokens, upstream credentials, personal CLI
     // settings, MCP configuration, or hooks to a model-controlled process.
-    const env={};for(const name of ['PATH','USER','LOGNAME','SHELL','LANG','LC_ALL','TZ']) {
+    // Preserve the real HOME unchanged so shell startup works. Configuration
+    // and transcripts use the explicit owned CLAUDE_CONFIG_DIR below.
+    const env={};for(const name of ['PATH','HOME','USER','LOGNAME','SHELL','LANG','LC_ALL','TZ']) {
       if(process.env[name])env[name]=process.env[name];
     }
     return{...env,CFFIXED_USER_HOME:profileHome,CLAUDE_CONFIG_DIR:configDir,TMPDIR:tmp,

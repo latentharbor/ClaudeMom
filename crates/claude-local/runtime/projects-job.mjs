@@ -20,7 +20,7 @@ function finish(values) {
   for(const line of output.split('\n')) {
     try{const value=JSON.parse(line);if(value.type==='result')answer=value;}catch{}
   }
-  if(!answer)try{const value=JSON.parse(output);if(value.type==='result')answer=value;}catch{}
+  if(!answer)try{const value=JSON.parse(output);answer=(Array.isArray(value)?value:[value]).findLast(v=>v?.type==='result');}catch{}
   fs.writeFileSync(path.join(directory,'stdout.log'),output,{mode:0o600});
   fs.writeFileSync(path.join(directory,'stderr.log'),errors,{mode:0o600});
   record({state:values.code===0&&answer&&answer.is_error!==true?'completed':'failed',finishedAt:new Date().toISOString(),

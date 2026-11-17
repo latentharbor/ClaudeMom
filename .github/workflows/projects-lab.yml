@@ -40,6 +40,7 @@ jobs:
           npm ci
           npm run tauri -- build --bundles app --config src-tauri/tauri.lab.conf.json
       - name: Prepare owned fixture
+        id: prepare
         run: |
           test "$(uname -m)" = arm64
           mkdir -p fixture projects-evidence
@@ -62,6 +63,7 @@ jobs:
           export PROJECTS_TEST_EVIDENCE="$PWD/projects-evidence/runner"
           node --test crates/claude-local/runtime/projects-runner.test.mjs
       - name: Native Projects UI and local API
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         run: |
           node scripts/verify-ui-lab.mjs \
             "$PWD/target/release/bundle/macos/ClaudeMom UI Lab.app" \
