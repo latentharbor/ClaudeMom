@@ -662,10 +662,17 @@ function ClaudeSettings({ status, busy, onConfigure, onAction, onVoice, update, 
         {config.voiceInput && !config.threePMode && !status.dictationReady ? <VoiceModel onReady={() => onAction("prepare")} /> : null}
         <Toggle
           checked={config.allowAllBrowserSites ?? false}
-          detail="Code 内置浏览器访问普通网站时不再逐站询问，不改变会话的权限模式。敏感站点、登录提交和操作确认仍由 Claude 处理；站点检查失败时仍需确认。改完重新启动 Claude 生效。"
+          detail="Code 内置浏览器访问普通网站时免逐站确认，开关动态生效。敏感站点、登录提交和操作确认仍由 Claude 处理；站点检查失败时仍需确认。"
           disabled={disabled || config.threePMode}
           label="允许所有网站"
           onChange={(next) => onConfigure({ allowAllBrowserSites: next })}
+        />
+        <Toggle
+          checked={config.allowLocalExtensions ?? true}
+          detail="使用本机的桌面扩展安装策略；Claude 仍验证扩展并确认安装，不代表组织管理员授权。修改后等待任务空闲生效。"
+          disabled={disabled || config.threePMode}
+          label="允许本机桌面扩展"
+          onChange={(next) => onConfigure({ allowLocalExtensions: next })}
         />
         <Toggle
           checked={config.importCliSessions ?? true}

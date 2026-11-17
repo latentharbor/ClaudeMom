@@ -65,14 +65,18 @@
       wrapSend(window['claude.web']?.LocalSessions);
       wrapSend(window['claude.web']?.LocalAgentModeSessions);
       const snapshot = await report();
-      if (revision && current.revision !== revision && snapshot.active.length === 0 && !snapshot.draft) {
+      if (revision && current.revision !== revision && snapshot.active.length === 0 && !snapshot.draft &&
+          current.activeWork === 0 && current.activeDictation === 0) {
         // Native API does its own final busy check before warming a fresh SDK.
         for (const session of snapshot.code) {
           if (session.sessionId?.startsWith('local_') && !busy(session) && typeof session.model === 'string') {
             const result = await window['claude.web'].LocalSessions.applyModelByRestart(session.sessionId, session.model);
-            if (result?.ok === false) return;
+            if (!['restarted', 'applies_on_next_start'].includes(result)) return;
           }
         }
+        const final = await report();
+        const latest = await state();
+        if (final.active.length || final.draft || latest.activeWork || latest.activeDictation) return;
         location.reload();
         return;
       }

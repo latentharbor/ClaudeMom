@@ -60,6 +60,7 @@ pub struct TemplateVersion {
 const ASSETS: &[(&str, &[u8])] = &[
     ("service.mjs", include_bytes!("../runtime/service.mjs")),
     ("hot-runtime.mjs", include_bytes!("../runtime/hot-runtime.mjs")),
+    ("local-policy.mjs", include_bytes!("../runtime/local-policy.mjs")),
     ("runtime-bridge.js", include_bytes!("../runtime/runtime-bridge.js")),
     (
         "proxy.mjs",
@@ -1979,6 +1980,7 @@ fn start_backend(
         .env("CLAUDE_LOCAL_LOCALIZATION", flag(config.localization))
         .env("CLAUDE_LOCAL_VOICE_INPUT", flag(config.voice_input))
         .env("CLAUDE_LOCAL_ALLOW_ALL_BROWSER_SITES", flag(config.allow_all_browser_sites))
+        .env("CLAUDE_LOCAL_ALLOW_LOCAL_EXTENSIONS", flag(config.allow_local_extensions))
         .env("CLAUDE_LOCAL_COMPUTER_USE", flag(config.computer_use))
         .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode))
         .env("CLAUDE_LOCAL_FORCE_BACKGROUND_MODE", flag(config.force_background_mode))

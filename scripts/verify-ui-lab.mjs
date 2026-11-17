@@ -9,7 +9,8 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
 const [manager, officialApp, reference, ca, cliCache, output, webCache] = process.argv.slice(2);
-const reloadProbe = process.argv.includes("--probe-reload");
+const serviceProbe = process.argv.includes('--probe-service');
+const reloadProbe = process.argv.includes("--probe-reload") || serviceProbe;
 const held = [];
 function finishHeld() {
   for (const entry of held) {
@@ -30,7 +31,7 @@ const upstream = http.createServer(async (req, res) => {
   for await (const part of req) raw += part;
   if (req.url.startsWith("/v1/messages")) {
     const body = JSON.parse(raw);
-    requests.push({ model: body.model, thinking: body.thinking, effort: body.output_config?.effort });
+    requests.push({ model: body.model, thinking: body.thinking, effort: body.output_config?.effort, endpointPort: req.socket.localPort });
     const message = { id: "msg_ui_lab", type: "message", role: "assistant", model: body.model,
       content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } };
     const events = [
@@ -73,7 +74,7 @@ execFileSync("python3", ["scripts/prepare-ui-lab.py", "--source", officialApp, "
   ...(webCache ? ["--web-cache", webCache] : [])], { stdio: "inherit" });
 fs.unlinkSync(upstreamFile);
 let managerOutput = "";
-const child = spawn(path.join(manager, "Contents/MacOS/claude-mom"), ["--lab-run"], { stdio: ["pipe", "pipe", "pipe"] });
+let child = spawn(path.join(manager, "Contents/MacOS/claude-mom"), ["--lab-run"], { stdio: ["pipe", "pipe", "pipe"] });
 child.stdout.on("data", (data) => { managerOutput += data.toString(); });
 child.stderr.on("data", (data) => { managerOutput += data.toString(); });
 let control;
@@ -346,10 +347,15 @@ try {
   }
   fs.writeFileSync(path.join(output, "native-results.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(output, "manager-output.txt"), managerOutput);
-  for (const name of ["desktop.log", "logs/main.log", "logs/renderer.log"]) {
+  for (const name of ["desktop.log", "logs/main.log", "logs/renderer.log", "claude-local/proxy.log"]) {
     const file=path.join(root,name);
     if(fs.existsSync(file)) fs.writeFileSync(path.join(output,path.basename(name)),fs.readFileSync(file).subarray(-40000));
   }
+  try {
+    const service = JSON.parse(fs.readFileSync(path.join(root, 'claude-local/service-config.json')));
+    fs.writeFileSync(path.join(output, 'service-config-shape.json'), JSON.stringify({ schema: service.schema,
+      revision: service.revision, coreRevision: service.coreRevision, worker: service.worker, envNames: Object.keys(service.env) }, null, 2));
+  } catch {}
   child.stdin.end();
   await Promise.race([once(child, "exit"), delay(10000)]);
   if (child.exitCode === null) child.kill("SIGTERM");

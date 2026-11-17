@@ -21,14 +21,17 @@ static EXITING: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
     host::ClaudeMomHost::install();
-    if host::is_lab_build() && std::env::args().any(|arg| arg == "--lab-run") {
-        let result = claude_local::perform("launch");
+    if host::is_lab_build() && std::env::args().any(|arg| arg == "--lab-run" || arg == "--lab-resume") {
+        let result = if std::env::args().any(|arg| arg == "--lab-resume") {
+            claude_local::resume_attached_proxy().and_then(|_| claude_local::status()).map(|status|
+                claude_local::ClaudeLocalResult { status, message: "Isolated manager adopted service".into() })
+        } else { claude_local::perform("launch") };
         match result {
             Ok(result) => {
                 println!("{}", serde_json::to_string(&result).unwrap());
                 let mut line = String::new();
                 let _ = std::io::stdin().read_line(&mut line);
-                let _ = claude_local::perform("stop");
+                if line.trim() != "detach" { let _ = claude_local::perform("stop"); }
             }
             Err(error) => {
                 eprintln!("isolated lab launch: {error:#}");

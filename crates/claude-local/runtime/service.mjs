@@ -200,7 +200,7 @@ function shutdown() {
 }
 server.listen(requestedPort, '127.0.0.1', async () => {
   try { wanted = candidate(); await boot(wanted); receipt(); }
-  catch { shutdown(); process.exitCode = 1; }
+  catch (error) { console.error('Local service startup failed:', error.stack); shutdown(); process.exitCode = 1; }
 });
 let reconciling = false;
 const timer = setInterval(async () => {

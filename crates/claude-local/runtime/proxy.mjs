@@ -33,6 +33,8 @@ import { desktopFeatures, loadDesktopUiProfile } from "./desktop-ui.mjs";
 import { selectUiResources } from "./ui-resources.mjs";
 import { createSitePolicyHandler, isSitePolicyUrl } from "./site-policy.mjs";
 import { createHotRuntime, requestSession, constantToken, validateTaskReport } from './hot-runtime.mjs';
+import { localCloudAccess, extensionInstallPolicy, isFakeIp } from './local-policy.mjs';
+import dns from 'node:dns';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const hot = createHotRuntime(process.env);
@@ -43,6 +45,12 @@ let activeInference = 0;
 let frontendTasks = { idle: false, active: [], draft: true, toolsReady: false };
 let taskObservedAt = 0;
 let quiescing = false;
+let networkWarning = null;
+if (process.env.CLAUDE_LOCAL_CORE_WORKER === '1') dns.lookup('example.com', { all: true }, (error, addresses) => {
+  if (!error && addresses.some(entry => isFakeIp(entry.address))) {
+    networkWarning = '检测到 Fake-IP DNS：Claude 的内置浏览器可能拦截部分网页资源。请在网络代理中为此客户端使用真实 DNS；本机不会关闭私有网络保护。';
+  }
+});
 hot.apply(process.env, process.env.CLAUDE_LOCAL_CONFIG_REVISION || '');
 const officialAssets = runtime.managed
   ? createOfficialAssets(process.env.CLAUDE_LOCAL_DESKTOP_RESOURCES)
@@ -476,7 +484,7 @@ function health() {
   return {
     instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
     configHash: hot.revision, activeInference, activeDictation: activeDictationWsConnections,
-    lastClientAt, ...(persistenceWarning || desktopUi.warning ? { warning: persistenceWarning || desktopUi.warning } : {}),
+    lastClientAt, ...(persistenceWarning || networkWarning || desktopUi.warning ? { warning: persistenceWarning || networkWarning || desktopUi.warning } : {}),
     ...(runtime.managed ? { uiResources: uiResources?.kind ?? "recorded", uiBuildId: uiResources?.buildId ?? officialAssets.buildId, desktopFeaturesSource: desktopUi.source,
       webFeaturesSource: uiResources?.kind === "web-cache" && desktopUi.webFeatures ? "official-reference" : "template",
       modelSelectorsSource: uiResources?.kind === "web-cache" && Array.isArray(desktopUi.web?.modelSelectorConfig) ? "official-reference" : "template" } : {}),
@@ -719,7 +727,7 @@ function normalizeBrowserAccess(access) {
   // not this local browser. Keep all other feature policies unchanged. The
   // Code launch toggle, local managed policy and site/action gates still apply.
   return { ...access, features: [
-    ...(Array.isArray(access.features) ? access.features : []).filter(feature => feature?.feature !== "cowork_browser_pane"),
+    ...localCloudAccess((Array.isArray(access.features) ? access.features : []).filter(feature => feature?.feature !== "cowork_browser_pane")),
     { feature: "cowork_browser_pane", status: "available" },
   ] };
 }
@@ -1097,6 +1105,15 @@ function generateSessionTitle(rawText, requestedModel, emptyFallback, callback) 
 function mockApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   const method = req.method;
+  if (method === 'POST' && /^\/api\/organizations\/[^/]+\/dxt\/can_install$/.test(p)) {
+    return readBody(req, raw => {
+      try {
+        if (raw.length > 2 * 1024 * 1024) return json(res, { error: 'Extension policy request too large' }, 413);
+        return json(res, extensionInstallPolicy(JSON.parse(raw), runtime.allowLocalExtensions), 200,
+          { 'x-claudemom-policy-source': 'local-device' });
+      } catch { return json(res, { error: 'Invalid desktop extension policy request' }, 400); }
+    });
+  }
   // The web bridge copies this organization capability into native
   // coworkBrowserToolsEnabled, which also selects Code's session Browser.
   // An empty fallback silently sends tools to legacy dev-server contexts,
@@ -2111,7 +2128,8 @@ function handleSnapshot(req, res, hostHeader) {
   const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
   if (runtime.managed && isMainClaudeHost && url.pathname === '/__codex_plus/runtime-state') {
     if (req.method === 'GET') return json(res, { schema: 1, token: bridgeToken,
-      revision: process.env.CLAUDE_LOCAL_UI_REVISION || '', quiescing, protocol: 1 });
+      revision: process.env.CLAUDE_LOCAL_UI_REVISION || '', quiescing, protocol: 1,
+      activeWork: activeInference, activeDictation: activeDictationWsConnections });
     if (req.method !== 'POST' || req.headers.origin !== 'https://claude.ai' ||
         !constantToken(req.headers['x-claudemom-runtime-token'], bridgeToken)) return json(res, { error: 'Forbidden' }, 403);
     return readBody(req, raw => {
