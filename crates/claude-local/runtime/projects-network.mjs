@@ -51,9 +51,12 @@ export function createProjectNetwork({parent,toolToken,jobId,resolveHost=host=>l
     if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.hash||connectMode&&(url.pathname!=='/'||url.search))throw Error('Invalid network destination');
     const hostname=url.hostname.replace(/^\[|\]$/g,'').toLowerCase(),port=Number(url.port||(url.protocol==='https:'?443:80));
     if(!port||port>65535||hostname==='localhost'||hostname.endsWith('.localhost')||hostname.endsWith('.local'))throw Error('Private network destinations are not allowed');
-    const addresses=net.isIP(hostname)?[{address:hostname,family:net.isIP(hostname)}]:await resolveHost(hostname);
-    if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw Error('Private network destinations are not allowed');
+    const ip=net.isIP(hostname);if(ip&&!publicAddress(hostname))throw Error('Private network destinations are not allowed');
+    // An unapproved hostname must not even cause a DNS query: otherwise DNS
+    // itself becomes an exfiltration channel around the domain permission.
     if(!await permission(hostname,port)||closed)throw Error('Network access was not approved');
+    const addresses=ip?[{address:hostname,family:ip}]:await resolveHost(hostname);
+    if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw Error('Private network destinations are not allowed');
     // Pin the resolved address, so a second DNS lookup cannot rebind to LAN,
     // loopback, the main Desktop proxy, or another local service.
     return{url,hostname,port,address:(addresses.find(a=>a.family===4)||addresses[0]).address};

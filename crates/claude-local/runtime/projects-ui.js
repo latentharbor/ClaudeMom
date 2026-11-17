@@ -30,6 +30,7 @@
     const content=root.querySelector('[data-content]');content.replaceChildren();root.querySelector('[data-error]').textContent='';
     for(const b of root.querySelectorAll('[data-tab]'))b.setAttribute('aria-selected',String(b.dataset.tab===tab));
     if(!state)return;
+    const lastJob=state.jobs.at(-1);if(lastJob?.state==='failed'&&lastJob.error)root.querySelector('[data-error]').textContent=lastJob.error;
     if(tab==='threads') {
       const form=node('form',undefined,{'data-form':'thread'});field(form,'线程名称','title');field(form,'任务','prompt','textarea');
       formSubmit(form,'启动独立线程',async values=>{await api(base()+'/threads','POST',Object.fromEntries(values));form.reset();});content.append(form);
@@ -49,6 +50,7 @@
         if(thread.branch)row.append(node('p',`${thread.branch} · ${(thread.base_commit||'').slice(0,8)}`));
         const latest=state.jobs.filter(j=>j.thread_root_id===thread.id).at(-1);
         if(latest?.error)row.append(node('p',latest.error,{'data-task-error':''}));
+        if(latest?.artifact_errors?.length)row.append(node('p',`${latest.artifact_errors.length} 个产物未能在沙箱内导出，请检查文件范围或大小限制。`,{'data-task-error':''}));
         if(latest?.state==='running'&&!latest.sandbox?.required)row.append(node('p','旧版任务尚无进程沙箱保护；请先停止旧任务，再启动新的 Projects 任务。',{'data-task-error':''}));
         content.append(row);
       }

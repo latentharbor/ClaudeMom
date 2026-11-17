@@ -12,28 +12,29 @@ test('private, loopback, metadata, CGNAT and Fake-IP ranges never qualify as pub
 });
 
 test('external proxy needs an actual task permission and pins DNS without forwarding its credential',async()=>{
-  const token='scoped-network-token',jobId='11111111-1111-4111-8111-111111111111',requests=[],connections=[];let decision='denied',approvals=0;
+  const token='scoped-network-token',jobId='11111111-1111-4111-8111-111111111111',requests=[],connections=[],dns=[];let decision='denied',approvals=0;
   const remote=http.createServer((req,res)=>{requests.push(req.headers);res.end('PUBLIC_FIXTURE');});
   const parent=http.createServer(async(req,res)=>{let raw='';for await(const part of req)raw+=part;
     assert.equal(req.headers.authorization,`Bearer ${token}`);
-    if(req.method==='POST'){const data=JSON.parse(raw);assert.equal(data.input.tool_name,'Network');assert.equal(data.input.input.hostname,'public.fixture');approvals++;res.end(JSON.stringify({id:'perm_network'}));}
+    if(req.method==='POST'){const data=JSON.parse(raw);assert.equal(data.input.tool_name,'Network');assert.ok(['public.fixture','private.fixture'].includes(data.input.input.hostname));approvals++;res.end(JSON.stringify({id:'perm_network'}));}
     else res.end(JSON.stringify({state:decision}));
   });
   remote.listen(0,'127.0.0.1');parent.listen(0,'127.0.0.1');await Promise.all([once(remote,'listening'),once(parent,'listening')]);
   // Only test code injects transport functions. Production uses the real DNS
   // resolver and net.connect; there is no environment/settings bypass.
   const broker=await createProjectBroker({upstream:`http://127.0.0.1:${parent.address().port}`,clientKey:'GLOBAL_KEY_NEVER_EXPOSED',toolToken:token,jobId,model:'owned/model',sessionId:'owned-session',
-    networkDependencies:{resolveHost:async host=>host==='private.fixture'?[{address:'127.0.0.1',family:4}]:[{address:'93.184.216.34',family:4}],
+    networkDependencies:{resolveHost:async host=>{dns.push(host);return host==='private.fixture'?[{address:'127.0.0.1',family:4}]:[{address:'93.184.216.34',family:4}];},
       connect:options=>{connections.push(options);return net.connect({host:'127.0.0.1',port:remote.address().port});}}});
   const address=new URL(broker.origin),headers={'proxy-authorization':'Basic '+Buffer.from('project:'+token).toString('base64')};
   const request=target=>new Promise((resolve,reject)=>{const req=http.request({hostname:address.hostname,port:address.port,path:target,headers},res=>{let body='';res.on('data',p=>body+=p);res.once('end',()=>resolve({status:res.statusCode,body}));});req.once('error',reject);req.end();});
   try{
-    assert.equal((await request('http://private.fixture/')).status,403);assert.equal(approvals,0);assert.equal(connections.length,0);
     assert.equal((await request('http://127.0.0.1:3425/v1/models')).status,403);assert.equal(approvals,0);
     assert.equal((await request('http://public.fixture/denied')).status,403);assert.equal(approvals,1);assert.equal(connections.length,0);
-    decision='allowed';const allowed=await request('http://public.fixture/approved');assert.equal(allowed.status,200);assert.equal(allowed.body,'PUBLIC_FIXTURE');
-    assert.deepEqual(connections,[{host:'93.184.216.34',port:80}]);assert.equal(approvals,2);
-    await request('http://public.fixture/again');assert.equal(approvals,2,'a permission lasts only for this task and destination');
+    assert.deepEqual(dns,[],'even DNS waits for an actual permission');
+    decision='allowed';assert.equal((await request('http://private.fixture/')).status,403);assert.equal(connections.length,0);
+    const allowed=await request('http://public.fixture/approved');assert.equal(allowed.status,200);assert.equal(allowed.body,'PUBLIC_FIXTURE');
+    assert.deepEqual(connections,[{host:'93.184.216.34',port:80}]);assert.equal(approvals,3);
+    await request('http://public.fixture/again');assert.equal(approvals,3,'a permission lasts only for this task and destination');
     for(const sent of requests){assert.equal(sent['proxy-authorization'],undefined);assert.equal(JSON.stringify(sent).includes(token),false);assert.equal(JSON.stringify(sent).includes('GLOBAL_KEY'),false);}
   }finally{await broker.close();remote.closeAllConnections();parent.closeAllConnections();await Promise.all([new Promise(r=>remote.close(r)),new Promise(r=>parent.close(r))]);}
 });
