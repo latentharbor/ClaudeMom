@@ -729,7 +729,7 @@ function ClaudeSettings({ status, busy, onConfigure, onAction, onVoice, update, 
       <div className="cm-about">
         <span>{APP_NAME} {version || ""}{status.version ? ` · Claude ${status.version}` : ""}</span>
         {update.phase === "available" ? (
-          <button className="cm-link" onClick={onInstallUpdate} type="button">更新到 {update.version}</button>
+          <button className="cm-link" disabled={Boolean(status.activeDictation)} title={status.activeDictation ? '请等录音结束后更新' : undefined} onClick={onInstallUpdate} type="button">更新到 {update.version}</button>
         ) : (
           <button className="cm-link" disabled={update.phase === "checking" || update.phase === "downloading"} onClick={onCheckUpdate} type="button">
             {update.phase === "checking" ? "检查中…" : update.phase === "latest" ? "已是最新" : "检查更新"}

@@ -86,6 +86,7 @@ export type ClaudeStatus = {
   needsRestart: boolean;
   updateState?: 'applied' | 'applying' | 'waiting_idle' | 'restart_required';
   serviceIndependent?: boolean;
+  activeDictation?: number;
 };
 
 export const SOURCE_LABELS: Record<string, string> = {

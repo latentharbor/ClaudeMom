@@ -1079,6 +1079,20 @@ test("organization browser capability does not fall through to an empty response
   assert.deepEqual(consent.json, { allowAllBrowserSites: false });
 });
 
+test('desktop extension policy has complete verdicts and a truthful local source', async () => {
+  const body = { extensions: { 'fixture.extension': { extension_id: 'fixture.extension', manifest: { name: 'Owned fixture' } } } };
+  const route = '/api/organizations/local/dxt/can_install';
+  const verdict = await request(service, route, { host: 'claude.ai', body });
+  assert.equal(verdict.status, 200);
+  assert.equal(verdict.headers['x-claudemom-policy-source'], 'local-device');
+  assert.equal(verdict.json.results['fixture.extension'].can_install, true);
+  const disabled = await start({ CLAUDE_LOCAL_ALLOW_LOCAL_EXTENSIONS: '0' });
+  try {
+    const denied = await request(disabled, route, { host: 'claude.ai', body });
+    assert.equal(denied.json.results['fixture.extension'].can_install, false);
+  } finally { await stop(disabled); }
+});
+
 test("local browser availability does not inherit a recording account's tier restriction", async () => {
   const dir = path.join(root, "browser-access-runtime");
   fs.cpSync(path.join(root, "runtime"), dir, { recursive: true });

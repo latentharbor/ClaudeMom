@@ -156,6 +156,7 @@ pub struct ClaudeLocalStatus {
     pub needs_restart: bool,
     pub update_state: String,
     pub service_independent: bool,
+    pub active_dictation: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1740,6 +1741,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         .and_then(Value::as_str)
         .is_some_and(|hash| hash != config_hash(&config));
     let independent = runtime.as_ref().is_some_and(|(_, _, _, h)| h.get("serviceProtocol").and_then(Value::as_u64) == Some(1));
+    let active_dictation = runtime.as_ref().and_then(|(_, _, _, h)| h.get("activeDictation")).and_then(Value::as_u64).unwrap_or(0);
     let needs_restart = (config.enabled && claude_running && (!local_process || !running))
         || (claude_running && launch_change_pending(&config))
         || (!independent && (runtime
@@ -1804,6 +1806,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         needs_restart,
         update_state,
         service_independent: independent,
+        active_dictation,
     })
 }
 
