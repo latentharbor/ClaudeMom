@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-export async function verifyProjectsLab({frames,evaluate,clickText,until,result,root,output}) {
+export async function verifyProjectsLab({frames,evaluate,clickText,until,result,root,output,rpc}) {
   const seen=[];
   async function frontend() {
     for(const frame of await frames()) {
@@ -33,9 +33,11 @@ export async function verifyProjectsLab({frames,evaluate,clickText,until,result,
   },30000);
   assert.equal(opened,true);
   await delay(2000);current=await inspect();result.projects.dialog=current.state;
-  const filled=await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('input')].find(e=>e.type!=='hidden'&&e.getBoundingClientRect().width>20);if(!e)return false;e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'LOCAL_PROJECTS_CI');e.dispatchEvent(new Event('input',{bubbles:true}));return true;})()");
+  const filled=await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('input')].find(e=>e.type!=='hidden'&&e.getBoundingClientRect().width>20);if(!e)return false;e.focus();e.select();return true;})()");
   assert.equal(filled,true,'Project name field');
+  await rpc('/insert-text',{id:current.frame.id,text:'LOCAL_PROJECTS_CI'});
   await delay(500);
+  result.projects.filledForm=await evaluate(current.frame,"({inputs:[...document.querySelectorAll('input')].map(e=>({value:e.value,type:e.type})),buttons:[...document.querySelectorAll('[role=dialog] button')].map(e=>({text:e.textContent,disabled:e.disabled}))})");
   assert.equal(await evaluate(current.frame,"(()=>{const dialog=document.querySelector('[role=dialog]')||document;const e=[...dialog.querySelectorAll('button')].find(e=>!e.disabled&&/^(Create|Create project|New project|创建|创建项目|新建项目)$/i.test(e.textContent.replace(/[\\uE000-\\uF8FF]/g,'').trim()));if(!e)return false;e.click();return true;})()"),true);
   const file=path.join(root,'projects-lab/projects.json');
   const saved=await until(()=>{try{const s=JSON.parse(fs.readFileSync(file));return s.channels.some(c=>c.name==='LOCAL_PROJECTS_CI')?s:null;}catch{return null;}});

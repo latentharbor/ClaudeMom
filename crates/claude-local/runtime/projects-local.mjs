@@ -65,6 +65,7 @@ export function createLocalProjects({ directory, accountId, models, clientKey, c
   }
   function message(channel, values) {
     const row = { id:id('cmsg_'), channel_id:channel, body:'', created_at:now(), updated_at:now(),
+      seq:data.messages.filter(m=>m.channel_id===channel).length+1,in_timeline:!values.thread_root_id,
       attachments:[], attached_outputs:[], ...values };
     data.messages.push(row);save();
     notify(channel,{type:'channel_message',...row});

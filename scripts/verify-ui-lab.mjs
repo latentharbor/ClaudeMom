@@ -153,7 +153,7 @@ try {
   assert.ok(status.data.startsWith(root + path.sep));
   result.checks.isolatedUserData = true;
   if(projectsProbe) {
-    await verifyProjectsLab({frames,evaluate,clickText,until,result,root,output});
+    await verifyProjectsLab({frames,evaluate,clickText,until,result,root,output,rpc});
   } else {
   await until(async () => {
     for (const frame of await frames()) {
@@ -431,8 +431,10 @@ try {
       for (const frame of current) {
         try {
           if(projectsProbe&&frame.url.startsWith('https://claude.ai/')) {
-            const diagnostics=await evaluate(frame,"fetch('/__codex_plus/projects-lab/diagnostics').then(r=>r.json())");
-            fs.writeFileSync(path.join(output,'projects-api-diagnostics.json'),JSON.stringify(diagnostics,null,2));
+            try{
+              const diagnostics=await evaluate(frame,"fetch('/__codex_plus/projects-lab/diagnostics',{signal:AbortSignal.timeout(2000)}).then(r=>r.json())");
+              fs.writeFileSync(path.join(output,'projects-api-diagnostics.json'),JSON.stringify(diagnostics,null,2));
+            }catch{}
           }
           result.frameDiagnostics.push({ url: frame.url, ui: await evaluate(frame,
             "({runtimeBridge:window.__claudeMomRuntimeBridgeStatus,runtimeBridgeError:window.__claudeMomRuntimeBridgeError,text:document.body?.innerText?.slice(0,12000), controls:[...document.querySelectorAll('button,a,[role=tab]')].slice(0,80).map(e=>({text:e.textContent?.trim().slice(0,100),label:e.getAttribute('aria-label'),title:e.getAttribute('title')}))})") });

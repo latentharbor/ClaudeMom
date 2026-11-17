@@ -2177,6 +2177,9 @@ function handleSnapshot(req, res, hostHeader) {
 
   const hostName = url.hostname.toLowerCase();
   const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
+  // Projects uses /v1, outside the older /api mock dispatcher. Never let an
+  // owned local project request fall through to Anthropic's cloud backend.
+  if(localProjects?.matches(url)&&(isMainClaudeHost||hostName==='api.anthropic.com'))return mockApi(req,res,url);
   if (runtime.managed && isMainClaudeHost && url.pathname === '/__codex_plus/runtime-state') {
     if (req.method === 'GET') return json(res, { schema: 1, token: bridgeToken,
       revision: process.env.CLAUDE_LOCAL_UI_REVISION || '', quiescing, protocol: 1,
