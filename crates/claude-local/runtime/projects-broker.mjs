@@ -4,16 +4,23 @@
 import http from 'node:http';
 import {once} from 'node:events';
 import {constantToken} from './hot-runtime.mjs';
+import {createProjectNetwork} from './projects-network.mjs';
 
-export async function createProjectBroker({upstream,clientKey,toolToken,jobId,model,sessionId}) {
+export async function createProjectBroker({upstream,clientKey,toolToken,jobId,model,sessionId,networkDependencies={}}) {
   const parent=new URL(upstream);
   if(parent.protocol!=='http:'||parent.hostname!=='127.0.0.1'||parent.pathname!=='/'||parent.search||parent.hash||parent.username||parent.password)throw Error('A local parent proxy is required');
   if(!clientKey||!toolToken||!/^[a-f0-9-]{36}$/i.test(jobId))throw Error('Invalid task broker credentials');
   const prefix=`/__codex_plus/projects-lab/jobs/${jobId}/tools`;
   const sockets=new Set(),requests=new Set();let closed=false;
+  const network=createProjectNetwork({parent,toolToken,jobId,...networkDependencies});let origin;
   const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
   const server=http.createServer(async(req,res)=>{
     try{
+      if(/^https?:\/\//.test(req.url)){
+        const absolute=new URL(req.url);
+        if(absolute.origin===origin)req.url=absolute.pathname+absolute.search;
+        else return await network.handle(req,res);
+      }
       const bearer=String(req.headers.authorization||'').replace(/^Bearer /,'');
       if(closed||req.headers.origin!==undefined||!req.url.startsWith('/')||req.url.startsWith('//')||
         !constantToken(String(req.headers['x-api-key']||bearer),toolToken))return json(res,403,{error:{message:'Task authorization required'}});
@@ -40,9 +47,11 @@ export async function createProjectBroker({upstream,clientKey,toolToken,jobId,mo
     }catch{if(!res.headersSent)json(res,400,{error:{message:'Invalid task request'}});else res.destroy();}
   });
   server.requestTimeout=300000;server.keepAliveTimeout=1000;
-  server.on('connect',(req,socket)=>socket.destroy());server.on('upgrade',(req,socket)=>socket.destroy());
+  server.on('connect',(req,socket,head)=>void network.tunnel(req,socket,head));server.on('upgrade',(req,socket)=>socket.destroy());
   server.on('connection',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
   server.listen(0,'127.0.0.1');await once(server,'listening');
-  return{origin:`http://127.0.0.1:${server.address().port}`,port:server.address().port,
-    async close(){closed=true;for(const req of requests)req.destroy();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}};
+  origin=`http://127.0.0.1:${server.address().port}`;
+  return{origin,port:server.address().port,
+    proxyURL:`http://project:${encodeURIComponent(toolToken)}@127.0.0.1:${server.address().port}`,
+    async close(){closed=true;network.close();for(const req of requests)req.destroy();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}};
 }

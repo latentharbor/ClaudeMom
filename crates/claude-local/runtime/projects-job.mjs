@@ -45,7 +45,8 @@ try{
     nodeBinary:config.nodeBinary,runtimeDir:config.runtimeDir,mcpFile,port:broker.port});
   profileFile=path.join(directory,'sandbox.sb');fs.writeFileSync(profileFile,plan.profile,{mode:0o600});
   const command=sandboxCommand(plan,profileFile,config.binary,['--messaging-socket-path',path.join(sockets,'agent.sock'),...config.args]);
-  const env={...config.env,ANTHROPIC_BASE_URL:broker.origin,ANTHROPIC_API_KEY:config.toolToken,ANTHROPIC_AUTH_TOKEN:config.toolToken};
+  const env={...config.env,ANTHROPIC_BASE_URL:broker.origin,ANTHROPIC_API_KEY:config.toolToken,ANTHROPIC_AUTH_TOKEN:config.toolToken,
+    HTTP_PROXY:broker.proxyURL,HTTPS_PROXY:broker.proxyURL,http_proxy:broker.proxyURL,https_proxy:broker.proxyURL,NO_PROXY:'127.0.0.1,localhost,::1',no_proxy:'127.0.0.1,localhost,::1'};
   cli=spawn(command.command,command.args,{cwd:config.cwd,env,detached:true,stdio:['pipe','pipe','pipe']});
   sandbox.enforced=true;
   cancellation=setInterval(()=>{

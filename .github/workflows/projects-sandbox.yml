@@ -18,7 +18,7 @@ jobs:
         with:
           node-version: 22
       - name: Kernel boundary and scoped broker
-        run: node --test crates/claude-local/runtime/projects-sandbox.test.mjs crates/claude-local/runtime/projects-broker.test.mjs
+        run: node --test crates/claude-local/runtime/projects-sandbox.test.mjs crates/claude-local/runtime/projects-broker.test.mjs crates/claude-local/runtime/projects-network.test.mjs
       - name: Sandbox startup diagnostics
         if: failure()
         run: |
