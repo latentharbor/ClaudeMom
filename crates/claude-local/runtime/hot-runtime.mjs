@@ -29,6 +29,7 @@ export function createHotRuntime(env) {
     get revision() { return revision; },
     get retiredSessions() { return [...sessions].filter(([, snapshot]) => snapshot !== current).map(([id]) => id); },
     apply(nextEnv, nextRevision) {
+      if (nextRevision && nextRevision === revision) return;
       const next = runtimeConfig(nextEnv); // validate the entire candidate first
       current = next;
       revision = nextRevision;

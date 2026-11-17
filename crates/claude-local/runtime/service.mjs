@@ -17,6 +17,8 @@ const requestedPort = Number(process.env.CLAUDE_LOCAL_SERVICE_PORT || 0);
 let current, wanted, worker, workerPort, workerHealth = {}, lastReport = 0, safe = false;
 let activeRequests = 0, switching = true, stopping = false, lastError = null;
 let approvedCoreRevision = null;
+let approvedAt = 0;
+const crashes = [];
 const tunnels = new Set(), waiters = new Set();
 let attempted = '';
 
@@ -44,6 +46,7 @@ function health() {
     configHash: current?.revision, pendingConfigHash: wanted?.revision !== current?.revision ? wanted?.revision : null,
     coreRevision: current?.coreRevision, pendingCoreRevision: wanted?.coreRevision !== current?.coreRevision ? wanted?.coreRevision : null,
     bridgeFresh: Date.now() - lastReport < 5000, activeRequests,
+    idleApprovedRevision: approvedCoreRevision, nativeIdle: safe,
     ...(lastError ? { warning: lastError } : {}) };
 }
 function receipt() {
@@ -65,6 +68,7 @@ async function boot(next) {
   switching = true;
   safe = false;
   approvedCoreRevision = null;
+  workerHealth = {};
   lastReport = 0;
   // Keep versioned code immutable; no new manager overwrites a running core.
   const child = spawn(process.execPath, [next.worker, '--port', '0', '--mode', 'mock', '--log', '0', '--ca', path.join(root, 'ca')], {
@@ -76,6 +80,7 @@ async function boot(next) {
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => { child.kill(); reject(Error('Core startup timed out')); }, 12000);
     child.on('message', message => {
+      if (child !== worker) return;
       if (message?.type === 'health') {
         workerHealth = message.health;
         if (!workerPort && child === worker) {
@@ -92,7 +97,11 @@ async function boot(next) {
       if (message?.type === 'tasks') {
         lastReport = Date.now();
         safe = message.idle === true && message.active === 0 && message.draft === false && message.toolsReady === true;
-        approvedCoreRevision = safe ? message.preparedRevision : null;
+        if (!safe) { approvedCoreRevision = null; approvedAt = 0; }
+        else if (/^[a-f0-9]{64}$/.test(message.preparedRevision || '')) {
+          approvedCoreRevision = message.preparedRevision;
+          approvedAt = Date.now();
+        }
       }
     });
     child.once('error', error => { clearTimeout(timeout); reject(error); });
@@ -103,6 +112,13 @@ async function boot(next) {
       if (!stopping && !switching) {
         lastError = 'Compatibility core exited. Review the local service log before retrying.';
         switching = true;
+        crashes.push(Date.now());
+        while (crashes[0] < Date.now() - 60000) crashes.shift();
+        if (crashes.length <= 3) setTimeout(async () => {
+          if (stopping || worker !== child) return;
+          try { await boot(current); }
+          catch { lastError = 'Compatibility core could not recover; current requests were not replayed.'; }
+        }, 500);
       }
       reject(Error('Core exited'));
     });
@@ -123,7 +139,7 @@ async function reconcile() {
     // Missing/stale renderer evidence blocks replacement, including tool gaps.
     worker.send({ type: 'updatePending', revision: wanted.coreRevision });
     if (!safe || Date.now() - lastReport >= 5000 || activeRequests !== 0 || workerHealth.activeInference !== 0 ||
-        workerHealth.activeDictation !== 0 || approvedCoreRevision !== wanted.coreRevision) return;
+        workerHealth.activeDictation !== 0 || approvedCoreRevision !== wanted.coreRevision || Date.now() - approvedAt > 5000) return;
     switching = true;
     const prepared = await new Promise(resolve => {
       const timeout = setTimeout(() => { worker.off('message', observe); resolve(false); }, 3000);

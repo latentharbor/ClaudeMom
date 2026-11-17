@@ -16,20 +16,34 @@ const settle = async () => { for (let i = 0; i < 15; i++) await new Promise(reso
 
 function harness({ enabled = true, policy = verdict(), origin = "https://claude.ai", child = false, fetchOverride } = {}) {
   const answers = [], calls = [];
-  let listener;
+  let listener, hide;
+  let unsubscribed = 0;
   const window = { "claude.web": { LocalSessions: {
-    onOnEvent(fn) { listener = fn; },
+    onOnEvent(fn) { listener = fn; return () => { listener = null; unsubscribed++; }; },
     respondToToolPermission(...args) { answers.push(args); return Promise.resolve(); },
   } }, fetch: async (path, options) => {
     calls.push({ path, options });
     if (fetchOverride) return fetchOverride(path, options);
     return new Response(JSON.stringify(path === configPath ? { allowAllBrowserSites: enabled } : policy),
       { headers: { "content-type": "application/json" } });
-  } };
+  }, addEventListener(name, fn) { if (name === 'pagehide') hide = fn; } };
   window.top = child ? {} : window;
   vm.runInNewContext(source, { window, location: { origin }, URL, AbortSignal });
-  return { answers, calls, emit: value => listener?.(value), window };
+  return { answers, calls, emit: value => listener?.(value), hide: () => hide?.(), get unsubscribed() { return unsubscribed; }, window };
 }
+
+test('frontend reload releases its native listener and cannot answer a late policy result', async () => {
+  let release;
+  const h = harness({ fetchOverride: async path => path === configPath
+    ? new Response(JSON.stringify({ allowAllBrowserSites: true }), { headers: { 'content-type': 'application/json' } })
+    : new Promise(resolve => { release = resolve; }) });
+  h.emit(event()); await settle();
+  h.hide();
+  assert.equal(h.unsubscribed, 1);
+  release(new Response(JSON.stringify(verdict()), { headers: { 'content-type': 'application/json' } }));
+  await settle();
+  assert.deepEqual(h.answers, []);
+});
 
 test("only an explicit opt-in enables ordinary-site consent in any existing session mode", async () => {
   assert.equal(runtimeConfig({}).allowAllBrowserSites, false);

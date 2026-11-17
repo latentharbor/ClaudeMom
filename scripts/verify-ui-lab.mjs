@@ -45,8 +45,8 @@ const upstream = http.createServer(async (req, res) => {
     ];
     res.writeHead(200, { "content-type": "text/event-stream" });
     const wire = event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-    if (reloadProbe && (body.model === "fixture/claude-sonnet-5-5" && raw.includes("UI_LAB_ROUTING") ||
-        body.model === "fixture/claude-opus-5-5" && raw.includes("UI_LAB_CHAT_RELOAD"))) {
+    if (reloadProbe && (body.model === "fixture/claude-sonnet-5-5" && raw.includes("UI_LAB_ROUTING") && !held.some(e=>e.kind==='code') ||
+        body.model === "fixture/claude-opus-5-5" && raw.includes("UI_LAB_CHAT_RELOAD") && !held.some(e=>e.kind==='chat'))) {
       const entry = { response: res, tail: events.slice(3).map(wire).join(""), aborted: false,
         kind: raw.includes("UI_LAB_CHAT_RELOAD") ? "chat" : "code" };
       held.push(entry);
@@ -434,6 +434,11 @@ try {
     const service = JSON.parse(fs.readFileSync(path.join(root, 'claude-local/service-config.json')));
     fs.writeFileSync(path.join(output, 'service-config-shape.json'), JSON.stringify({ schema: service.schema,
       revision: service.revision, coreRevision: service.coreRevision, worker: service.worker, envNames: Object.keys(service.env) }, null, 2));
+  } catch {}
+  try {
+    const ready = JSON.parse(fs.readFileSync(path.join(root, 'claude-local/ready.json')));
+    const health = await fetch(`http://127.0.0.1:${ready.port}/__codex_claude_local/health`).then(r=>r.json());
+    fs.writeFileSync(path.join(output, 'service-health-final.json'), JSON.stringify(health,null,2));
   } catch {}
   child.stdin.end();
   await Promise.race([once(child, "exit"), delay(10000)]);

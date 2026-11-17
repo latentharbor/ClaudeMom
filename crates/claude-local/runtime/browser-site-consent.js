@@ -38,7 +38,7 @@
     return url;
   }
 
-  api.onOnEvent(event => {
+  const unsubscribe = api.onOnEvent(event => {
     if (event?.type === "tool_permission_resolved") {
       pending.delete(event.requestId ?? event.request?.requestId);
       // Native versions which omit the request ID must never let an in-flight
@@ -75,4 +75,8 @@
       if (pending.get(request.requestId) === token) pending.delete(request.requestId);
     });
   });
+  window.addEventListener?.('pagehide', () => {
+    pending.clear();
+    try { if (typeof unsubscribe === 'function') unsubscribe(); } catch {}
+  }, { once: true });
 })();

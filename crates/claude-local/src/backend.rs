@@ -1947,7 +1947,6 @@ fn start_backend(
     install_assets(root)?;
     let client_key = service_client_key(root)?;
     let ready_file = root.join("ready.json");
-    let log = private_file(&root.join("proxy.log"))?;
     let mut command = hidden_command(node);
     command
         .arg(root.join("service.mjs"))
@@ -2050,6 +2049,7 @@ fn start_backend(
         use std::os::windows::process::CommandExt;
         command.creation_flags(crate::CREATE_NO_WINDOW | 0x00000008 | 0x00000200);
     }
+    let log = private_file(&root.join("proxy.log"))?;
     command
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
