@@ -33,6 +33,7 @@ export async function createProjectBroker({upstream,clientKey,toolToken,jobId,mo
       if(req.method==='GET'&&/^\/api\/claude_(?:cli\/bootstrap|code\/(?:policy_limits|settings|managed_settings))(?:\/|$)/.test(url.pathname))return json(res,200,{settings:{},data:[],enabled:true});
       if(!inference&&!mcp)return json(res,403,{error:{message:'Task route is not allowed'}});
       const parts=[];let length=0;for await(const part of req){length+=part.length;if(length>16*1024*1024)return json(res,413,{error:{message:'Task request is too large'}});parts.push(part);}
+      if(closed)return json(res,403,{error:{message:'Task has ended'}});
       let body=Buffer.concat(parts);
       if(inference){const value=JSON.parse(body);if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid request');value.model=model;body=Buffer.from(JSON.stringify(value));}
       const headers={'content-type':'application/json','content-length':body.length,authorization:`Bearer ${inference?clientKey:toolToken}`};

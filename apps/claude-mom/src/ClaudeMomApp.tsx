@@ -684,7 +684,7 @@ function ClaudeSettings({ status, busy, onConfigure, onAction, onVoice, update, 
         />
         <Toggle
           checked={config.localProjects ?? false}
-          detail="使用官方 Projects 界面，在本机运行并行任务、Library、记忆和计划任务，推理走选中的上游。数据保存在本机，不同步到官方云端。仅支持 macOS；首次请先在 Code 页启动一次任务以准备内置 CLI。修改后等待任务空闲生效。"
+          detail="使用官方 Projects 界面，在本机运行并行任务、Library、记忆和计划任务，推理走选中的上游。整个 CLI 与 MCP 受系统沙箱约束，外网按任务确认。数据保存在本机，不同步到官方云端。仅支持 macOS；首次请先在 Code 页启动一次任务以准备内置 CLI。修改后等待任务空闲生效。"
           disabled={disabled || config.threePMode || !status.sourceApp.endsWith('.app')}
           label="本地 Projects"
           onChange={(next) => onConfigure({ localProjects: next })}

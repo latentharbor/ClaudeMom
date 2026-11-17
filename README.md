@@ -65,6 +65,14 @@ Projects：不提供云端协作或跨设备同步；计划任务只有在本机
 核心来源及许可证见 `runtime/third-party/ds-project/UPSTREAM.md`（MIT）和
 `runtime/third-party/dsh-projects/UPSTREAM.md`（Apache-2.0），路径均相对于 `crates/claude-local/`。
 
+0.1.13 起，本地 Projects 的整个 CLI 与 MCP 子进程强制在 macOS 系统沙箱内运行。
+自己的 worktree 和临时数据可写，Library 快照与 Git 元数据只读；外网经任务代理按目标确认，
+不能绕过代理直接连接其他服务。隔离失败会明确阻止任务，不会自动退出沙箱重试。
+迁移前请先结束旧版 Projects 任务。详细边界见 [进程沙箱](docs/projects-sandbox.md)。
+
+Prompt 不全来自 Claude 官方：CLI 内置提示词保留，项目调度与记忆规则主要来自 DS Project，
+另有 ClaudeMom 的本地工具和上下文适配。见 [Prompt 来源](docs/projects-prompts.md)。
+
 ## 结构
 
 | 目录 | 说明 |

@@ -13,6 +13,8 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
   {skip:!process.env.PROJECTS_TEST_CLI,timeout:180000},async()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'project-cli-'));let backend;
   const requests=[],readMarkers=new Set();
+  const secret='PRIVATE_CLI_BOUNDARY_SENTINEL',outside=path.join(directory,'private-outside-worktrees');fs.writeFileSync(outside,secret);
+  let nativeReadBlocked=false;
   const server=http.createServer(async(req,res)=>{
     if(!req.url.startsWith('/v1/messages'))return void backend.handle(req,res,new URL(req.url,'http://localhost')).catch(e=>{res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:e.message}}));});
     let raw='';for await(const part of req)raw+=part;const body=JSON.parse(raw);requests.push(body);
@@ -23,7 +25,16 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     const results=body.messages.flatMap(m=>Array.isArray(m.content)?m.content.filter(c=>c.type==='tool_result'):[]);
     if(JSON.stringify(results).includes('OWNED_LIBRARY_REFERENCE'))readMarkers.add(marker);
     let content;
-    if(current.includes('RESUME_CANCELLED'))content=[{type:'text',text:'RESUMED_CANCELLED_SESSION'}];
+    if(current.includes('NATIVE_BOUNDARY_READ')){
+      if(!results.length)content=[{type:'tool_use',id:'toolu_private_read',name:'Read',input:{file_path:outside}}];
+      else{assert.equal(raw.includes(secret),false,'actual Read tool cannot expose the outside sentinel');nativeReadBlocked=results.some(r=>r.is_error);content=[{type:'text',text:'NATIVE_BOUNDARY_BLOCKED'}];}
+    }
+    else if(current.includes('NATIVE_PUBLISH_OUTPUT')){
+      const library=/Project Library snapshot: ([^\n\\]+)/.exec(words)?.[1],cwd=library&&path.dirname(path.dirname(library));
+      content=!results.length?[{type:'tool_use',id:'toolu_publish_write',name:'Write',input:{file_path:path.join(cwd,'publish.txt'),content:'OWNED_SANDBOX_PUBLISH'}}]:
+        results.length===1?[{type:'tool_use',id:'toolu_publish_mcp',name:'mcp__local_project__project_publish_file',input:{path:'publish.txt'}}]:[{type:'text',text:'NATIVE_OUTPUT_PUBLISHED'}];
+    }
+    else if(current.includes('RESUME_CANCELLED'))content=[{type:'text',text:'RESUMED_CANCELLED_SESSION'}];
     else if(current.includes('Project worker report:'))content=[{type:'text',text:'COORDINATOR_SUMMARY'}];
     else if(current.includes('COORDINATOR_WORKER_'))content=[{type:'text',text:'COORDINATOR_CHILD_DONE'}];
     else if(current.includes('COORDINATE_TWO'))content=results.length?[{type:'text',text:'COORDINATOR_STARTED'}]:[
@@ -83,6 +94,15 @@ test('real CLI workers run in parallel, read Library, wait through restart, obey
     const resumed=backend.snapshot().jobs.filter(j=>j.thread_root_id===cancel.id).at(-1);
     assert.equal(resumed.session_id,cancelledSession,'cancellation preserves the existing CLI session');
     assert.match(resumed.result,/RESUMED_CANCELLED_SESSION/);
+    const boundary=(await request(base+'/threads','POST',{title:'Native boundary',prompt:'NATIVE_BOUNDARY_READ'})).thread;
+    const publish=(await request(base+'/threads','POST',{title:'Native publish',prompt:'NATIVE_PUBLISH_OUTPUT'})).thread;
+    const nativeIds=new Set([boundary.id,publish.id]);let complete=false;
+    for(let n=0;n<300;n++){
+      const state=backend.snapshot();for(const p of state.permissions.filter(p=>p.state==='pending'&&nativeIds.has(p.thread_id)))await request(base+'/permissions/'+p.id,'POST',{decision:'allow'});
+      const jobs=state.jobs.filter(j=>nativeIds.has(j.thread_root_id));if(jobs.length===2&&jobs.every(j=>['completed','failed'].includes(j.state))){assert.ok(jobs.every(j=>j.state==='completed'),JSON.stringify(jobs.map(j=>({state:j.state,error:j.error}))));complete=true;break;}await delay(200);
+    }
+    assert.equal(complete,true);assert.equal(nativeReadBlocked,true);assert.equal(fs.readFileSync(outside,'utf8'),secret);
+    assert.ok(backend.snapshot().files.some(f=>f.kind==='output'&&f.source?.path==='publish.txt'&&Buffer.from(f.content,'base64').toString()==='OWNED_SANDBOX_PUBLISH'));
     const auto=(await request('/v1/code/channels','POST',{name:'Coordinator fixture'})).channel;
     await request('/v1/code/channels/'+auto.id+'/messages','POST',{body:'COORDINATE_TWO',client_message_id:'cmsg_coordinator_fixture'});
     await until(()=>backend.snapshot().threads.filter(t=>t.channel_id===auto.id).length===2);

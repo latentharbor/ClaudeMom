@@ -56,12 +56,13 @@ export function createProjectNetwork({parent,toolToken,jobId,resolveHost=host=>l
     // itself becomes an exfiltration channel around the domain permission.
     if(!await permission(hostname,port)||closed)throw Error('Network access was not approved');
     const addresses=ip?[{address:hostname,family:ip}]:await resolveHost(hostname);
+    if(closed)throw Error('Task has ended');
     if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw Error('Private network destinations are not allowed');
     // Pin the resolved address, so a second DNS lookup cannot rebind to LAN,
     // loopback, the main Desktop proxy, or another local service.
     return{url,hostname,port,address:(addresses.find(a=>a.family===4)||addresses[0]).address};
   }
-  function socket(target){const value=connect({host:target.address,port:target.port});connections.add(value);value.once('close',()=>connections.delete(value));return value;}
+  function socket(target){if(closed)throw Error('Task has ended');const value=connect({host:target.address,port:target.port});connections.add(value);value.once('close',()=>connections.delete(value));return value;}
   return{
     async handle(req,res){
       try{

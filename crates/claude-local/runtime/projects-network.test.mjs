@@ -38,3 +38,18 @@ test('external proxy needs an actual task permission and pins DNS without forwar
     for(const sent of requests){assert.equal(sent['proxy-authorization'],undefined);assert.equal(JSON.stringify(sent).includes(token),false);assert.equal(JSON.stringify(sent).includes('GLOBAL_KEY'),false);}
   }finally{await broker.close();remote.closeAllConnections();parent.closeAllConnections();await Promise.all([new Promise(r=>remote.close(r)),new Promise(r=>parent.close(r))]);}
 });
+
+test('closing a task during DNS cannot create a late external connection',async()=>{
+  let resolveDNS,entered=false,connections=0;
+  const parent=http.createServer(async(req,res)=>{for await(const p of req){}res.end(JSON.stringify(req.method==='POST'?{id:'perm_end'}:{state:'allowed'}));});
+  parent.listen(0,'127.0.0.1');await once(parent,'listening');
+  const token='closing-task-token',broker=await createProjectBroker({upstream:`http://127.0.0.1:${parent.address().port}`,clientKey:'GLOBAL',toolToken:token,
+    jobId:'11111111-1111-4111-8111-111111111111',model:'owned/model',sessionId:'owned',
+    networkDependencies:{resolveHost:()=>{entered=true;return new Promise(r=>resolveDNS=r);},connect:()=>{connections++;throw Error('late connection');}}});
+  const url=new URL(broker.origin);
+  const req=http.request({hostname:url.hostname,port:url.port,path:'http://public.fixture/',headers:{'proxy-authorization':'Basic '+Buffer.from('project:'+token).toString('base64')}});
+  req.on('error',()=>{});req.end();
+  try{for(let n=0;n<100&&!entered;n++)await new Promise(r=>setTimeout(r,10));assert.equal(entered,true);
+    await broker.close();resolveDNS([{address:'93.184.216.34',family:4}]);await new Promise(r=>setTimeout(r,30));assert.equal(connections,0);
+  }finally{req.destroy();if(resolveDNS)resolveDNS([]);parent.closeAllConnections();await new Promise(r=>parent.close(r));}
+});
