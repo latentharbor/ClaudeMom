@@ -75,6 +75,7 @@ export function sandboxCommand(plan,profileFile,binary,args) {
   // The preflight runs on the CI runner / user's machine, never the target
   // application. Any unsupported/denied/invalid profile stops before the CLI.
   const checked=spawnSync(executor,['-f',profileFile,'/usr/bin/true'],{encoding:'utf8',timeout:10000,env:{PATH:'/usr/bin:/bin'}});
-  if(checked.status!==0)throw new ProjectSandboxError('The required process Sandbox could not start; execution was blocked');
+  if(checked.status!==0){const error=new ProjectSandboxError('The required process Sandbox could not start; execution was blocked');
+    error.diagnostic=String(checked.stderr||checked.error?.message||checked.signal||checked.status).slice(0,4000);throw error;}
   return{command:executor,args:['-f',profileFile,binary,...args]};
 }

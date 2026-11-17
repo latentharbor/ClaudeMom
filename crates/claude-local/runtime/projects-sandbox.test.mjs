@@ -53,5 +53,6 @@ test('full process and MCP-like child cannot escape filesystem, IPC or broker bo
     for(const [name,value]of Object.entries(checks))assert.equal(value,true,name);assert.equal(otherHits,0);
     assert.equal(fs.readFileSync(secret,'utf8'),'PRIVATE_SENTINEL');
     assert.throws(()=>sandboxCommand(plan,path.join(root,'missing.sb'),process.execPath,['-e','process.exit(0)']),ProjectSandboxError,'invalid sandbox never starts an unrestricted actor');
-  }finally{broker.closeAllConnections();other.closeAllConnections();await Promise.all([new Promise(r=>broker.close(r)),new Promise(r=>other.close(r)),new Promise(r=>outsideIPC.close(r))]);fs.rmSync(root,{recursive:true,force:true});}
+  }catch(error){if(error.diagnostic)console.error(error.diagnostic);throw error;}
+  finally{broker.closeAllConnections();other.closeAllConnections();await Promise.all([new Promise(r=>broker.close(r)),new Promise(r=>other.close(r)),new Promise(r=>outsideIPC.close(r))]);fs.rmSync(root,{recursive:true,force:true});}
 });

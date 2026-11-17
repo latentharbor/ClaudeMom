@@ -55,6 +55,6 @@ try{
   cli.once('close',(code,signal)=>void finish({code:code??-1,signal}));
   cli.stdin.on('error',()=>{});cli.stdin.end(config.prompt);
 }catch(error){
-  errors=String(error.message);await finish({code:-1,error_code:error.code||'project_sandbox_start_failed',
+  errors=String(error.diagnostic||error.message);await finish({code:-1,error_code:error.code||'project_sandbox_start_failed',
     error:'The required process Sandbox could not start; execution was blocked. Check the private task log.'});
 }
